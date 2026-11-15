@@ -13,7 +13,8 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, inst: linux,   ext: "" }
           - { os: macos-15-intel,   target: x86_64-apple-darwin,       inst: macos,   ext: "" }
           - { os: macos-latest,     target: aarch64-apple-darwin,      inst: macos,   ext: "" }
-          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    inst: windows, ext: ".exe" }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    inst: windows, ext: ".exe", arch: x64 }
+          - { os: windows-11-arm,   target: aarch64-pc-windows-msvc,   inst: windows, ext: ".exe", arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -34,10 +35,10 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBinDir=..\..\target\x86_64-pc-windows-msvc\release installers\windows\rmojo.iss
-          Copy-Item installers\windows\Output\RMojo-Setup.exe RMojo-Setup.exe
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DArch=${{ matrix.arch }} /DBinDir=..\..\target\${{ matrix.target }}\release installers\windows\rmojo.iss
+          Copy-Item installers\windows\Output\RMojo-Setup-${{ matrix.arch }}.exe RMojo-Setup-${{ matrix.arch }}.exe
       - uses: actions/upload-artifact@v4
-        with: { name: "rmojo-${{ matrix.target }}", path: "rmojo-*.tar.gz\nRMojo-Setup.exe", if-no-files-found: ignore }
+        with: { name: "rmojo-${{ matrix.target }}", path: "rmojo-*.tar.gz\nRMojo-Setup-*.exe", if-no-files-found: ignore }
   android-ios-check:
     runs-on: macos-latest
     steps:

@@ -1,7 +1,10 @@
 ; RMojo installer for Windows (Inno Setup 6). Native rmojo.exe, no WSL needed.
-; Build: ISCC.exe /DAppVer=0.3.0 /DBinDir=..\..\target\release installers\windows\rmojo.iss  -> Output\RMojo-Setup.exe
+; Build: ISCC.exe /DAppVer=0.3.0 /DBinDir=..\..\target\release installers\windows\rmojo.iss  -> Output\RMojo-Setup-x64.exe (or -arm64 with /DArch=arm64)
 #ifndef AppVer
 #define AppVer "0.3.0"
+#endif
+#ifndef Arch
+#define Arch "x64"
 #endif
 #ifndef BinDir
 #define BinDir "..\..\target\release"
@@ -15,7 +18,14 @@ AppPublisherURL=https://github.com/aon-co-jp/RMojo
 DefaultDirName={localappdata}\Programs\RMojo
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-OutputBaseFilename=RMojo-Setup
+#if Arch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
+ArchitecturesAllowed=x64compatible arm64
+ArchitecturesInstallIn64BitMode=x64compatible arm64
+#endif
+OutputBaseFilename=RMojo-Setup-{#Arch}
 OutputDir=Output
 Compression=lzma2
 SolidCompression=yes

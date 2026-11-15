@@ -12,7 +12,8 @@ rmojo run hello.py        rmojo --version
 ## Installers
 | Platform | Installer | Status |
 |---|---|---|
-| Windows x64 | `installers/windows/rmojo.iss` -> `RMojo-Setup.exe` (per-user, PATH) | **インストール/実行/アンインストール試験OK** (PATH追加・削除も確認) |
+| Windows x64 | `installers/windows/rmojo.iss` -> `RMojo-Setup-x64.exe` (per-user, PATH) | **インストール/実行/アンインストール試験OK** (PATH追加・削除も確認) |
+| Windows ARM64 (Snapdragon / Copilot+ PC) | `rmojo.iss /DArch=arm64` -> `RMojo-Setup-arm64.exe` (ネイティブ aarch64-pc-windows-msvc) | CIでビルド+差分試験(windows-11-arm)。実機(Snapdragon)は未確認 |
 | Linux x86_64 / aarch64 | `installers/linux/install.sh` (tar.gz) | built by CI |
 | macOS Intel / Apple silicon | `installers/macos/install.sh` (tar.gz) | built by CI, unsigned |
 | Android aarch64 | `installers/android/install.sh` (Termux / adb) | **実機で確認** (moto g53y, Android 14: v0.2.0 の version / .mojo / .py 実行OK) |
