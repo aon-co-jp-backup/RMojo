@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Differential test: run each tests/*.py with CPython and with `mojou run`, compare stdout. Usage: python tests/run.py <mojou binary>"""
+"""Differential test: run each tests/*.py with CPython and with `rmojo run`, compare stdout. Usage: python tests/run.py <rmojo binary>"""
 import glob
 import subprocess
 import sys
@@ -17,6 +17,6 @@ for f in files:
     print(("OK   " if ok else "DIFF ") + f)
     if not ok:
         bad += 1
-        print("--- cpython\n" + py.stdout + py.stderr + "--- mojou\n" + mj.stdout + mj.stderr)
+        print("--- cpython\n" + py.stdout + py.stderr + "--- rmojo\n" + mj.stdout + mj.stderr)
 print("differences=%d" % bad)
 sys.exit(1 if bad else 0)

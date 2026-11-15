@@ -21,23 +21,23 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
       - name: test (differential vs CPython)
         shell: bash
-        run: python3 tests/run.py target/${{ matrix.target }}/release/mojou${{ matrix.ext }} || python tests/run.py target/${{ matrix.target }}/release/mojou${{ matrix.ext }}
+        run: python3 tests/run.py target/${{ matrix.target }}/release/rmojo${{ matrix.ext }} || python tests/run.py target/${{ matrix.target }}/release/rmojo${{ matrix.ext }}
       - name: package (unix)
         if: matrix.inst != 'windows'
         shell: bash
         run: |
-          d=mojou-${{ matrix.target }}; mkdir $d
-          cp target/${{ matrix.target }}/release/mojou $d/; cp installers/${{ matrix.inst }}/*.sh $d/; cp -r examples README.md LICENSE $d/
+          d=rmojo-${{ matrix.target }}; mkdir $d
+          cp target/${{ matrix.target }}/release/rmojo $d/; cp installers/${{ matrix.inst }}/*.sh $d/; cp -r examples README.md LICENSE $d/
           tar czf $d.tar.gz $d
       - name: installer (windows)
         if: matrix.inst == 'windows'
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBinDir=..\..\target\x86_64-pc-windows-msvc\release installers\windows\mojou.iss
-          Copy-Item installers\windows\Output\MojoU-Setup.exe MojoU-Setup.exe
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBinDir=..\..\target\x86_64-pc-windows-msvc\release installers\windows\rmojo.iss
+          Copy-Item installers\windows\Output\RMojo-Setup.exe RMojo-Setup.exe
       - uses: actions/upload-artifact@v4
-        with: { name: "mojou-${{ matrix.target }}", path: "mojou-*.tar.gz\nMojoU-Setup.exe", if-no-files-found: ignore }
+        with: { name: "rmojo-${{ matrix.target }}", path: "rmojo-*.tar.gz\nRMojo-Setup.exe", if-no-files-found: ignore }
   android-ios-check:
     runs-on: macos-latest
     steps:
@@ -48,10 +48,10 @@ jobs:
           cargo install cargo-ndk --locked
           rustup target add aarch64-linux-android
           cargo ndk -t arm64-v8a build --release
-          mkdir mojou-android-aarch64; cp target/aarch64-linux-android/release/mojou installers/android/install.sh README.md mojou-android-aarch64/
-          tar czf mojou-android-aarch64.tar.gz mojou-android-aarch64
+          mkdir rmojo-android-aarch64; cp target/aarch64-linux-android/release/rmojo installers/android/install.sh README.md rmojo-android-aarch64/
+          tar czf rmojo-android-aarch64.tar.gz rmojo-android-aarch64
       - uses: actions/upload-artifact@v4
-        with: { name: mojou-android-aarch64, path: mojou-android-aarch64.tar.gz }
+        with: { name: rmojo-android-aarch64, path: rmojo-android-aarch64.tar.gz }
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, android-ios-check]

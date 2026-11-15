@@ -1,4 +1,4 @@
-//! MojoU (FUSION) — a Mojo-style language: Python syntax on the surface, a memory-safe Rust implementation inside (no C++, no `unsafe`).
+//! RMojo — a Mojo-style language: Python syntax on the surface, a memory-safe Rust implementation inside (no C++, no `unsafe`).
 //! Pipeline: Python source -> rustpython-parser AST -> resolved IR (locals/globals/functions as indices) -> fast interpreter.
 //! Supported subset (v0.1): def (typed or untyped), int/float/bool/str, arithmetic, comparisons, and/or/not, if/elif/else, while,
 //! for-in-range, break/continue/return, recursion, module-level globals, print/int/float/str/bool/abs/min/max/len.
@@ -325,7 +325,7 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
 }
 
 fn compile(src: &str) -> R<Program> {
-    let suite = ast::Suite::parse(src, "<mojou>").map_err(|e| Er::from(format!("SyntaxError: {e}")))?;
+    let suite = ast::Suite::parse(src, "<rmojo>").map_err(|e| Er::from(format!("SyntaxError: {e}")))?;
     // pass 1: function names
     let mut fnames: HashMap<String, usize> = HashMap::new();
     for s in &suite {
@@ -688,7 +688,7 @@ enum IFlow {
 }
 
 fn iovf() -> Er {
-    Er::from("OverflowError: integer overflow (MojoU integers are 64-bit)")
+    Er::from("OverflowError: integer overflow (RMojo integers are 64-bit)")
 }
 
 fn ibin(op: Bop, x: i64, y: i64) -> R<i64> {
@@ -972,7 +972,7 @@ fn int_of(v: &V) -> Option<i64> {
 
 fn binop(op: Bop, a: V, b: V) -> R<V> {
     if let (Some(x), Some(y)) = (int_of(&a), int_of(&b)) {
-        let ovf = || "OverflowError: integer overflow (MojoU integers are 64-bit)".to_string();
+        let ovf = || "OverflowError: integer overflow (RMojo integers are 64-bit)".to_string();
         return Ok(match op {
             Bop::Add => V::I(x.checked_add(y).ok_or_else(ovf)?),
             Bop::Sub => V::I(x.checked_sub(y).ok_or_else(ovf)?),
@@ -1379,12 +1379,12 @@ fn run_source(src: &str) -> R<()> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("mojou 0.1.0 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo 0.1.0 (Rust, no C++)"),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("mojou: cannot read {}: {e}", args[2]);
+                    eprintln!("rmojo: cannot read {}: {e}", args[2]);
                     std::process::exit(2);
                 }
             };
@@ -1397,13 +1397,13 @@ fn main() {
                     std::process::exit(1);
                 }
                 _ => {
-                    eprintln!("mojou: internal error");
+                    eprintln!("rmojo: internal error");
                     std::process::exit(70);
                 }
             }
         }
         _ => {
-            eprintln!("usage: mojou run <file.mojo|file.py> | mojou --version");
+            eprintln!("usage: rmojo run <file.mojo|file.py> | rmojo --version");
             std::process::exit(2);
         }
     }

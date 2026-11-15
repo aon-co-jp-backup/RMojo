@@ -1,12 +1,12 @@
 [package]
-name = "mojou"
+name = "rmojo"
 version = "0.1.0"
 edition = "2021"
-description = "MojoU (FUSION): a Mojo-style language. Python syntax on the surface, a memory-safe Rust implementation inside (no C++). One codebase for Windows, Linux, macOS, Android and iOS."
+description = "RMojo: a Mojo-style language. Python syntax on the surface, a memory-safe Rust implementation inside (no C++). One codebase for Windows, Linux, macOS, Android and iOS."
 license = "MIT"
 
 [[bin]]
-name = "mojou"
+name = "rmojo"
 path = "src/main.rs"
 
 [dependencies]

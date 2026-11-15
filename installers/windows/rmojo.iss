@@ -1,5 +1,5 @@
-; MojoU installer for Windows (Inno Setup 6). Native mojou.exe, no WSL needed.
-; Build: ISCC.exe /DAppVer=0.1.0 /DBinDir=..\..\target\release installers\windows\mojou.iss  -> Output\MojoU-Setup.exe
+; RMojo installer for Windows (Inno Setup 6). Native rmojo.exe, no WSL needed.
+; Build: ISCC.exe /DAppVer=0.1.0 /DBinDir=..\..\target\release installers\windows\rmojo.iss  -> Output\RMojo-Setup.exe
 #ifndef AppVer
 #define AppVer "0.1.0"
 #endif
@@ -8,23 +8,23 @@
 #endif
 [Setup]
 AppId={{3B7C2E4A-6F10-4B59-8A32-0C9D5E1F7A64}
-AppName=MojoU (Mojo-style language, Python syntax, Rust inside)
+AppName=RMojo (Mojo-style language, Python syntax, Rust inside)
 AppVersion={#AppVer}
 AppPublisher=aon-co-jp
-AppPublisherURL=https://github.com/aon-co-jp/MojoU
-DefaultDirName={localappdata}\Programs\MojoU
+AppPublisherURL=https://github.com/aon-co-jp/RMojo
+DefaultDirName={localappdata}\Programs\RMojo
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-OutputBaseFilename=MojoU-Setup
+OutputBaseFilename=RMojo-Setup
 OutputDir=Output
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 LicenseFile=..\..\LICENSE
 ChangesEnvironment=yes
-UninstallDisplayName=MojoU
+UninstallDisplayName=RMojo
 [Files]
-Source: "{#BinDir}\mojou.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "{#BinDir}\rmojo.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\examples\*"; DestDir: "{app}\examples"; Flags: ignoreversion recursesubdirs
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
