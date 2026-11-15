@@ -1,7 +1,7 @@
 //! Mojo surface syntax -> the Python subset RMojo runs. Line based, deliberately small and honest:
 //! supported: `fn` (-> `def`, `raises` dropped), `var`/`let` declarations, `alias X = v`, argument conventions
 //! (`inout`/`borrowed`/`owned`/`mut`/`read`/`out`), Mojo type names (Int, Int64, UInt..., Float64, String, Bool -> Python names).
-//! NOT supported (reported as an error, never silently mis-run): `struct`, `trait`, `@decorators`, `import` of Mojo modules, SIMD.
+//! `struct` -> `class` (fields from `var`, methods via `fn`; reference semantics). NOT supported (reported as an error, never silently mis-run): struct trait lists, `trait`, `@decorators`, `import` of Mojo modules, SIMD.
 
 fn map_type_words(line: &str) -> String {
     let mut out = String::new();
@@ -54,14 +54,28 @@ fn drop_conventions(s: &str) -> String {
 
 pub fn to_python(src: &str) -> Result<String, String> {
     let mut out = Vec::new();
+    let mut struct_indent: Option<usize> = None;
     for (n, raw) in src.lines().enumerate() {
         let ind: String = raw.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
         let body = &raw[ind.len()..];
         let t = body.trim_start();
         let unsupported = |what: &str| Err(format!("rmojo: line {}: Mojo `{what}` is not supported yet", n + 1));
-        if t.starts_with("struct ") {
-            return unsupported("struct");
+        if !t.is_empty() {
+            if let Some(si) = struct_indent {
+                if ind.len() <= si {
+                    struct_indent = None;
+                }
+            }
         }
+        if let Some(rest) = t.strip_prefix("struct ") {
+            if t.contains('(') {
+                return unsupported("struct with traits");
+            }
+            struct_indent = Some(ind.len());
+            out.push(format!("{ind}class {}", rest));
+            continue;
+        }
+        let in_struct = struct_indent.is_some();
         if t.starts_with("trait ") {
             return unsupported("trait");
         }
@@ -76,7 +90,7 @@ pub fn to_python(src: &str) -> Result<String, String> {
         } else if let Some(rest) = t.strip_prefix("var ").or_else(|| t.strip_prefix("let ")) {
             line = rest.to_string();
             // `var x: Int = 5` -> `x: int = 5` (annotation kept); `var x: Int` alone has no value -> unsupported
-            if !line.contains('=') {
+            if !line.contains('=') && !in_struct {
                 return unsupported("declaration without a value");
             }
         } else if let Some(rest) = t.strip_prefix("alias ") {
@@ -101,8 +115,12 @@ mod tests {
         assert_eq!(to_python("fn f(inout a: Int, borrowed b: Float64) raises -> Int:").unwrap(), "def f(a: int, b: float) -> int:");
     }
     #[test]
-    fn struct_rejected() {
-        assert!(to_python("struct P:\n    var x: Int").is_err());
+    fn struct_lowered() {
+        assert_eq!(to_python("struct P:
+    var x: Int").unwrap(), "class P:
+    x: int");
+        assert!(to_python("struct P(Copyable):
+    var x: Int").is_err());
     }
     #[test]
     fn strings_untouched() {

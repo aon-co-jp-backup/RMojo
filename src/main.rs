@@ -19,7 +19,21 @@ enum V {
     F(f64),
     B(bool),
     S(Rc<String>),
+    O(Rc<ObjBox>),
     N,
+}
+
+/// A struct instance (reference semantics, like a Python object).
+#[derive(Debug)]
+struct ObjBox {
+    cls: usize,
+    f: std::cell::RefCell<Vec<V>>,
+}
+
+struct Class {
+    fields: Vec<String>,
+    methods: HashMap<String, usize>,
+    init: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,12 +71,16 @@ enum E {
     If(Box<E>, Box<E>, Box<E>),
     Call(usize, Vec<E>),
     Builtin(&'static str, Vec<E>),
+    New(usize, Vec<E>),
+    Attr(Box<E>, String),
+    Method(Box<E>, String, Vec<E>),
 }
 
 #[derive(Clone, Debug)]
 enum St {
     SetLocal(usize, E),
     SetGlobal(usize, E),
+    SetAttr(E, String, E),
     Multi(Vec<Target>, Vec<E>),
     Expr(E),
     If(E, Vec<St>, Vec<St>),
@@ -91,6 +109,7 @@ struct Program {
     nglobals: usize,
     entry: Option<usize>,
     ifuncs: Vec<Option<IFunc>>,
+    classes: Vec<Class>,
 }
 
 /// Boxed error (keeps `Result<V, Er>` small so the hot path stays in registers).
@@ -116,6 +135,7 @@ type R<T> = Result<T, Er>;
 
 struct Scope<'a> {
     funcs: &'a HashMap<String, usize>,
+    classes: &'a HashMap<String, usize>,
     globals: &'a mut HashMap<String, usize>,
     locals: Option<HashMap<String, usize>>, // None at module level
 }
@@ -200,10 +220,19 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
             }
         }
         Expr::IfExp(i) => E::If(Box::new(cexpr(&i.test, sc)?), Box::new(cexpr(&i.body, sc)?), Box::new(cexpr(&i.orelse, sc)?)),
+        Expr::Attribute(a) => E::Attr(Box::new(cexpr(&a.value, sc)?), a.attr.to_string()),
+        Expr::Call(c) if matches!(&*c.func, Expr::Attribute(_)) => {
+            let Expr::Attribute(a) = &*c.func else { unreachable!() };
+            let args = c.args.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?;
+            E::Method(Box::new(cexpr(&a.value, sc)?), a.attr.to_string(), args)
+        }
         Expr::Call(c) => {
             let Expr::Name(f) = &*c.func else { return Err("only direct calls of named functions are supported".into()) };
             let args = c.args.iter().map(|a| cexpr(a, sc)).collect::<R<Vec<_>>>()?;
             let name = f.id.as_str();
+            if let Some(&ci) = sc.classes.get(name) {
+                return Ok(E::New(ci, args));
+            }
             if let Some(&fi) = sc.funcs.get(name) {
                 return Ok(E::Call(fi, args));
             }
@@ -254,6 +283,12 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                     out.push(St::Multi(tg, vals));
                     continue;
                 }
+                if let Expr::Attribute(at) = &a.targets[0] {
+                    let o = cexpr(&at.value, sc)?;
+                    let v = cexpr(&a.value, sc)?;
+                    out.push(St::SetAttr(o, at.attr.to_string(), v));
+                    continue;
+                }
                 let Expr::Name(n) = &a.targets[0] else { return Err("only simple names can be assigned".into()) };
                 let v = cexpr(&a.value, sc)?;
                 out.push(match sc.lookup_set(n.id.as_str()) {
@@ -274,6 +309,22 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                 }
             }
             Stmt::AugAssign(a) => {
+                if let Expr::Attribute(at) = &*a.target {
+                    let op = match a.op {
+                        ast::Operator::Add => Bop::Add,
+                        ast::Operator::Sub => Bop::Sub,
+                        ast::Operator::Mult => Bop::Mul,
+                        ast::Operator::Div => Bop::Div,
+                        ast::Operator::FloorDiv => Bop::FloorDiv,
+                        ast::Operator::Mod => Bop::Mod,
+                        ast::Operator::Pow => Bop::Pow,
+                        _ => return Err("unsupported operator".into()),
+                    };
+                    let cur = E::Attr(Box::new(cexpr(&at.value, sc)?), at.attr.to_string());
+                    let v = E::Bin(op, Box::new(cur), Box::new(cexpr(&a.value, sc)?));
+                    out.push(St::SetAttr(cexpr(&at.value, sc)?, at.attr.to_string(), v));
+                    continue;
+                }
                 let Expr::Name(n) = &*a.target else { return Err("only simple names can be assigned".into()) };
                 let op = match a.op {
                     ast::Operator::Add => Bop::Add,
@@ -334,6 +385,14 @@ fn compile(src: &str) -> R<Program> {
             fnames.insert(f.name.to_string(), n);
         }
     }
+    let mut cnames: HashMap<String, usize> = HashMap::new();
+    let mut cdefs: Vec<&ast::StmtClassDef> = Vec::new();
+    for s in &suite {
+        if let Stmt::ClassDef(c) = s {
+            cnames.insert(c.name.to_string(), cdefs.len());
+            cdefs.push(c);
+        }
+    }
     let mut globals: HashMap<String, usize> = HashMap::new();
     // pass 2: module-level assignments define globals (so functions can read them); collect in order
     let mut main_stmts: Vec<&Stmt> = Vec::new();
@@ -341,6 +400,7 @@ fn compile(src: &str) -> R<Program> {
     for s in &suite {
         match s {
             Stmt::FunctionDef(f) => fdefs.push(f),
+            Stmt::ClassDef(_) => {}
             other => main_stmts.push(other),
         }
     }
@@ -406,12 +466,73 @@ fn compile(src: &str) -> R<Program> {
             locals.insert(a.def.arg.to_string(), n);
         }
         let nparams = locals.len();
-        let mut sc = Scope { funcs: &fnames, globals: &mut globals, locals: Some(locals) };
+        let mut sc = Scope { funcs: &fnames, classes: &cnames, globals: &mut globals, locals: Some(locals) };
         let body = cblock(&f.body, &mut sc)?;
         let nlocals = sc.locals.as_ref().map(|l| l.len()).unwrap_or(0);
         funcs.push(Func { nparams, nlocals, body });
     }
-    let mut sc = Scope { funcs: &fnames, globals: &mut globals, locals: None };
+    // struct/class methods: appended after the top-level functions
+    fn self_attrs(stmts: &[Stmt], out: &mut Vec<String>) {
+        for st in stmts {
+            match st {
+                Stmt::Assign(a) => {
+                    for t in &a.targets {
+                        if let Expr::Attribute(at) = t {
+                            if !out.contains(&at.attr.to_string()) {
+                                out.push(at.attr.to_string());
+                            }
+                        }
+                    }
+                }
+                Stmt::If(i) => {
+                    self_attrs(&i.body, out);
+                    self_attrs(&i.orelse, out);
+                }
+                Stmt::While(w) => self_attrs(&w.body, out),
+                Stmt::For(f) => self_attrs(&f.body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut classes: Vec<Class> = Vec::new();
+    let mut mdefs: Vec<(usize, &ast::StmtFunctionDef)> = Vec::new();
+    for (ci, c) in cdefs.iter().enumerate() {
+        let mut fields: Vec<String> = Vec::new();
+        for st in &c.body {
+            if let Stmt::AnnAssign(a) = st {
+                if let Expr::Name(n) = &*a.target {
+                    fields.push(n.id.to_string());
+                }
+            }
+        }
+        let mut methods = HashMap::new();
+        let mut init = None;
+        for st in &c.body {
+            if let Stmt::FunctionDef(f) = st {
+                self_attrs(&f.body, &mut fields);
+                let fi = fdefs.len() + mdefs.len();
+                if f.name.as_str() == "__init__" {
+                    init = Some(fi);
+                }
+                methods.insert(f.name.to_string(), fi);
+                mdefs.push((ci, f));
+            }
+        }
+        classes.push(Class { fields, methods, init });
+    }
+    for (_, f) in &mdefs {
+        let mut locals: HashMap<String, usize> = HashMap::new();
+        for a in f.args.args.iter() {
+            let n = locals.len();
+            locals.insert(a.def.arg.to_string(), n);
+        }
+        let nparams = locals.len();
+        let mut sc = Scope { funcs: &fnames, classes: &cnames, globals: &mut globals, locals: Some(locals) };
+        let body = cblock(&f.body, &mut sc)?;
+        let nlocals = sc.locals.as_ref().map(|l| l.len()).unwrap_or(0);
+        funcs.push(Func { nparams, nlocals, body });
+    }
+    let mut sc = Scope { funcs: &fnames, classes: &cnames, globals: &mut globals, locals: None };
     let main_body = cblock(&owned, &mut sc)?;
     let entry = fnames.get("main").copied();
     // typed int fast path: fixpoint over functions whose signatures are `int -> int` and whose bodies stay inside the int subset
@@ -440,7 +561,8 @@ fn compile(src: &str) -> R<Program> {
             break;
         }
     }
-    Ok(Program { funcs, main_body, nglobals: globals.len(), entry, ifuncs })
+    ifuncs.resize_with(funcs.len(), || None);
+    Ok(Program { funcs, main_body, nglobals: globals.len(), entry, ifuncs, classes })
 }
 
 // ---------------------------------------------------------------- typed int fast path
@@ -939,6 +1061,7 @@ fn show(v: &V) -> String {
         V::F(f) => pyrepr_f(*f),
         V::B(b) => if *b { "True".into() } else { "False".into() },
         V::S(s) => s.as_str().to_string(),
+        V::O(_) => "<object>".into(),
         V::N => "None".into(),
     }
 }
@@ -949,6 +1072,7 @@ fn truthy(v: &V) -> bool {
         V::F(f) => *f != 0.0,
         V::B(b) => *b,
         V::S(s) => !s.is_empty(),
+        V::O(_) => true,
         V::N => false,
     }
 }
@@ -1082,6 +1206,27 @@ fn compare(op: Cop, a: &V, b: &V) -> R<bool> {
 }
 
 impl<'p> Vm<'p> {
+    fn call_values(&mut self, fi: usize, vals: Vec<V>) -> R<V> {
+        let f = &self.p.funcs[fi];
+        if vals.len() != f.nparams {
+            return Err(format!("TypeError: function takes {} arguments but {} were given", f.nparams, vals.len()).into());
+        }
+        if self.depth >= MAX_DEPTH {
+            return Err("RecursionError: maximum recursion depth exceeded".into());
+        }
+        let nbase = self.stack.len();
+        self.stack.extend(vals);
+        self.stack.resize(nbase + f.nlocals, V::N);
+        self.depth += 1;
+        let r = self.exec_block(&f.body, nbase);
+        self.depth -= 1;
+        self.stack.truncate(nbase);
+        Ok(match r? {
+            Flow::Return(v) => v,
+            _ => V::N,
+        })
+    }
+
     /// Condition evaluation without materialising a `V` for the common int comparison.
     #[inline]
     fn cond(&mut self, e: &E, base: usize) -> R<bool> {
@@ -1225,6 +1370,48 @@ impl<'p> Vm<'p> {
                     _ => V::N,
                 }
             }
+            E::Attr(o, name) => match self.eval(o, base)? {
+                V::O(ob) => {
+                    let idx = self.p.classes[ob.cls].fields.iter().position(|f| f == name).ok_or_else(|| format!("AttributeError: no attribute '{name}'"))?;
+                    let v = ob.f.borrow()[idx].clone();
+                    v
+                }
+                _ => return Err(format!("AttributeError: no attribute '{name}'").into()),
+            },
+            E::New(ci, args) => {
+                let cl = &self.p.classes[*ci];
+                let ob = Rc::new(ObjBox { cls: *ci, f: std::cell::RefCell::new(vec![V::N; cl.fields.len()]) });
+                let mut vals = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    vals.push(self.eval(a, base)?);
+                }
+                match cl.init {
+                    Some(fi) => {
+                        let mut all = vec![V::O(ob.clone())];
+                        all.extend(vals);
+                        self.call_values(fi, all)?;
+                    }
+                    None => {
+                        if vals.len() > cl.fields.len() {
+                            return Err("TypeError: too many constructor arguments".into());
+                        }
+                        for (i, v) in vals.into_iter().enumerate() {
+                            ob.f.borrow_mut()[i] = v;
+                        }
+                    }
+                }
+                V::O(ob)
+            }
+            E::Method(o, name, args) => {
+                let ov = self.eval(o, base)?;
+                let V::O(ob) = &ov else { return Err(format!("AttributeError: no method '{name}'").into()) };
+                let fi = *self.p.classes[ob.cls].methods.get(name).ok_or_else(|| format!("AttributeError: no method '{name}'"))?;
+                let mut all = vec![ov.clone()];
+                for a in args.iter() {
+                    all.push(self.eval(a, base)?);
+                }
+                self.call_values(fi, all)?
+            }
             E::Builtin(name, args) => {
                 let vals = args.iter().map(|a| self.eval(a, base)).collect::<R<Vec<_>>>()?;
                 self.builtin(name, vals)?
@@ -1345,6 +1532,13 @@ impl<'p> Vm<'p> {
                         };
                     }
                 }
+                St::SetAttr(o, name, e) => {
+                    let ov = self.eval(o, base)?;
+                    let v = self.eval(e, base)?;
+                    let V::O(ob) = &ov else { return Err(format!("AttributeError: cannot set '{name}'").into()) };
+                    let idx = self.p.classes[ob.cls].fields.iter().position(|f| f == name).ok_or_else(|| format!("AttributeError: no attribute '{name}'"))?;
+                    ob.f.borrow_mut()[idx] = v;
+                }
                 St::Return(e) => {
                     let v = match e {
                         Some(e) => self.eval(e, base)?,
@@ -1381,7 +1575,7 @@ mod mojo_syntax;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("rmojo 0.1.3 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo 0.1.4 (Rust, no C++)"),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,
