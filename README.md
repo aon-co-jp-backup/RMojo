@@ -15,7 +15,7 @@ rmojo run hello.py        rmojo --version
 | Windows x64 | `installers/windows/rmojo.iss` -> `RMojo-Setup.exe` (per-user, PATH) | **インストール/実行/アンインストール試験OK** (PATH追加・削除も確認) |
 | Linux x86_64 / aarch64 | `installers/linux/install.sh` (tar.gz) | built by CI |
 | macOS Intel / Apple silicon | `installers/macos/install.sh` (tar.gz) | built by CI, unsigned |
-| Android aarch64 | `installers/android/install.sh` (Termux / adb) | **実機で確認** (moto g53y, Android 14: version / .mojo / .py 実行OK) |
+| Android aarch64 | `installers/android/install.sh` (Termux / adb) | **実機で確認** (moto g53y, Android 14: v0.2.0 の version / .mojo / .py 実行OK) |
 | iOS | `installers/ios/README.md` | compile check only |
 
 `compat/wsl-bridge/` keeps the old MojoW feature (run the *official* Mojo inside WSL from Windows; unofficial).
@@ -35,4 +35,4 @@ Subset of Python syntax; 64-bit integers (overflow is an error); no lists/dicts/
 - リスト・辞書・文字列メソッド(append/pop/insert/sort/get/keys/values/items/split/join等)、`for x in リスト/辞書/文字列`、`in`、`len/sum/sorted/list`(`tests/t3_collections.py`はCPythonと差分0)
 - **未対応**: スライス、タプル型、パラメータ化(`fn f[T: ...]`・`struct S[T]`)、他のデコレーター、ポインタ、Mojoモジュールのimport、`def`の引数型検査(型は注釈のみで検査しない)、整数は64bit。 / Not supported: slices, tuples as a type, parametric fn/struct, other decorators, pointers, Mojo module imports, type checking of annotations; integers are 64-bit.
 
-**BSD/UNIX**: FreeBSD・NetBSD・illumos向けに `cargo check` が通る(`scripts/bsd-check.sh`)。実機・VMでの実行は未確認。 / `cargo check` passes for FreeBSD, NetBSD and illumos; not run on real systems. **TV (Android TV)**: 同じAndroidバイナリを使う想定、実機・エミュレーター未確認。 / **iPhone/iPad**: コンパイル確認のみ。
+**BSD/UNIX**: FreeBSD・NetBSD・illumos向けに `cargo check` が通る(`scripts/bsd-check.sh`)。実機・VMでの実行は未確認。 / `cargo check` passes for FreeBSD, NetBSD and illumos; not run on real systems. **Android TV**: エミュレーター(Android 13 TV x86、leanback)で v0.2.0 の `.mojo`/`.py` 実行を確認(i686-linux-android ビルド)。TV実機は未確認。 / **iPhone/iPad**: コンパイル確認のみ。
