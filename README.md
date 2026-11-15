@@ -161,3 +161,23 @@ Subset of Python syntax; 64-bit integers (overflow is an error); no lists/dicts/
 - **Server-streaming is supported** (`open-runo-connect-*` in RPoem, main `1570371` / `34cb595`): `application/connect+json` envelopes, also via gRPC / gRPC-web; mid-stream errors end with a terminal frame; item/time limits, resource release on disconnect, and a real-TCP `WatchEvents` test pass. **Not yet deployed to the VPS.**
 - **When to use**: watching changes, progress updates, incremental results. One-shot calls stay plain Connect unary. Client-streaming / bidirectional only when needed.
 - German and Russian not yet added.
+
+## RMojo - 多言語の説明 / Multilingual description (13 languages)
+
+公開ページ / Pages: https://easy-web.tokyo/RMojo ・ https://easy-web.tokyo/RMojo/demo (ダウンロード専用 / download-only)
+
+- **日本語**: Rustで書かれた、MojoスタイルとPythonスタイルのプログラムを実行するインタープリタ。Windows・Android・Linux・macOS向け。
+- **English**: An interpreter written in Rust that runs Mojo-style and Python-style programs, for Windows, Android, Linux and macOS.
+- **中文(简体)**: 使用 Rust 编写的解释器,可运行 Mojo 风格和 Python 风格的程序,支持 Windows、Android、Linux 和 macOS。
+- **中文(台灣・繁體)**: 以 Rust 撰寫的直譯器,可執行 Mojo 風格與 Python 風格的程式,支援 Windows、Android、Linux 與 macOS。
+- **한국어**: Rust로 작성된 인터프리터로, Mojo 스타일과 Python 스타일의 프로그램을 실행합니다. Windows, Android, Linux, macOS를 지원합니다.
+- **Italiano**: Un interprete scritto in Rust che esegue programmi in stile Mojo e in stile Python, per Windows, Android, Linux e macOS.
+- **Français**: Un interpréteur écrit en Rust qui exécute des programmes de style Mojo et de style Python, pour Windows, Android, Linux et macOS.
+- **Deutsch**: Ein in Rust geschriebener Interpreter, der Programme im Mojo- und im Python-Stil ausführt, für Windows, Android, Linux und macOS.
+- **Русский**: Интерпретатор на Rust, выполняющий программы в стиле Mojo и Python, для Windows, Android, Linux и macOS.
+- **Українська**: Інтерпретатор на Rust, що виконує програми у стилі Mojo та Python, для Windows, Android, Linux і macOS.
+- **فارسی (ایران)**: مفسری نوشته‌شده با Rust که برنامه‌هایی به سبک Mojo و پایتون را اجرا می‌کند؛ برای Windows، Android، Linux و macOS.
+- **العربية**: مفسِّر مكتوب بلغة Rust يشغّل برامج بأسلوب Mojo وأسلوب Python، لأنظمة Windows وAndroid وLinux وmacOS.
+- **עברית (ישראל)**: מפרש שנכתב ב-Rust ומריץ תוכניות בסגנון Mojo ובסגנון פייתון, עבור Windows, Android, Linux ו-macOS.
+
+Download: https://github.com/aon-co-jp/RMojo/releases/latest
