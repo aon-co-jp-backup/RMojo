@@ -1,7 +1,9 @@
-//! Mojo surface syntax -> the Python subset RMojo runs. Line based, deliberately small and honest:
-//! supported: `fn` (-> `def`, `raises` dropped), `var`/`let` declarations, `alias X = v`, argument conventions
-//! (`inout`/`borrowed`/`owned`/`mut`/`read`/`out`), Mojo type names (Int, Int64, UInt..., Float64, String, Bool -> Python names).
-//! `struct` -> `class` (fields from `var`, methods via `fn`; reference semantics). NOT supported (reported as an error, never silently mis-run): struct trait lists, `trait`, `@decorators`, `import` of Mojo modules, SIMD.
+//! Mojo surface syntax -> the Python subset RMojo runs. Line based, deliberately small and honest.
+//! Supported: `fn` (-> `def`, `raises` dropped), `var`/`let`, `alias X = v`, argument conventions (`inout`/`borrowed`/`owned`/`mut`/`read`/`out`),
+//! Mojo type names (Int, Float64, String, Bool ...), `struct` (-> `class`; fields from `var`; conformance lists dropped),
+//! `trait` blocks (dropped: RMojo is duck typed, conformance is not checked), decorators `@value`/`@always_inline`/... (dropped),
+//! `List[T](...)` / `Dict[K, V]()` / `SIMD[T, n](...)` constructors.
+//! NOT supported (reported as an error, never silently mis-run): other decorators, parametric `fn f[T: ...]`, `import` of Mojo modules, pointers.
 
 fn map_type_words(line: &str) -> String {
     let mut out = String::new();
@@ -46,15 +48,83 @@ fn map_type_words(line: &str) -> String {
 fn drop_conventions(s: &str) -> String {
     let mut t = s.to_string();
     for kw in ["inout ", "borrowed ", "owned ", "mut ", "read ", "out ", "deinit "] {
-        // only inside the parameter list: after '(' or ", "
         t = t.replace(&format!("({kw}"), "(").replace(&format!(", {kw}"), ", ");
     }
     t
 }
 
+/// `List[T](a, b)` -> `[a, b]`, `Dict[K, V]()` -> `{}`, `SIMD[T, n](a, b)` -> `simd(a, b)`. Type uses without a call are left alone.
+fn rewrite_ctors(line: &str) -> String {
+    let cs: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cs.len() {
+        let prev_ident = i > 0 && (cs[i - 1].is_alphanumeric() || cs[i - 1] == '_' || cs[i - 1] == '.');
+        let rest: String = cs[i..].iter().take(5).collect();
+        let kind = if prev_ident {
+            None
+        } else if rest.starts_with("List[") {
+            Some(("List", 4))
+        } else if rest.starts_with("Dict[") {
+            Some(("Dict", 4))
+        } else if rest.starts_with("SIMD[") {
+            Some(("SIMD", 4))
+        } else {
+            None
+        };
+        if let Some((k, nlen)) = kind {
+            // balanced [...]
+            let mut j = i + nlen;
+            let mut depth = 0;
+            while j < cs.len() {
+                if cs[j] == '[' {
+                    depth += 1;
+                } else if cs[j] == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if j < cs.len() && j + 1 < cs.len() && cs[j + 1] == '(' {
+                // balanced (...)
+                let mut m = j + 1;
+                let mut pd = 0;
+                while m < cs.len() {
+                    if cs[m] == '(' {
+                        pd += 1;
+                    } else if cs[m] == ')' {
+                        pd -= 1;
+                        if pd == 0 {
+                            break;
+                        }
+                    }
+                    m += 1;
+                }
+                if m < cs.len() {
+                    let inner: String = cs[j + 2..m].iter().collect();
+                    let inner = rewrite_ctors(&inner);
+                    match k {
+                        "List" => out.push_str(&format!("[{inner}]")),
+                        "Dict" => out.push_str("{}"),
+                        _ => out.push_str(&format!("simd({inner})")),
+                    }
+                    i = m + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(cs[i]);
+        i += 1;
+    }
+    out
+}
+
 pub fn to_python(src: &str) -> Result<String, String> {
     let mut out = Vec::new();
     let mut struct_indent: Option<usize> = None;
+    let mut trait_indent: Option<usize> = None;
     for (n, raw) in src.lines().enumerate() {
         let ind: String = raw.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
         let body = &raw[ind.len()..];
@@ -66,37 +136,55 @@ pub fn to_python(src: &str) -> Result<String, String> {
                     struct_indent = None;
                 }
             }
+            if let Some(ti) = trait_indent {
+                if ind.len() <= ti {
+                    trait_indent = None;
+                } else {
+                    continue; // inside a trait block: dropped
+                }
+            }
+        } else if trait_indent.is_some() {
+            continue;
+        }
+        if t.starts_with("trait ") {
+            trait_indent = Some(ind.len());
+            continue;
+        }
+        if t.starts_with('@') {
+            let d = t.trim_start_matches('@').split(['(', ' ']).next().unwrap_or("");
+            if matches!(d, "value" | "always_inline" | "no_inline" | "register_passable" | "staticmethod" | "nonmaterializable") {
+                continue;
+            }
+            return unsupported(&format!("@{d}"));
         }
         if let Some(rest) = t.strip_prefix("struct ") {
-            if t.contains('(') {
-                return unsupported("struct with traits");
-            }
+            let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             struct_indent = Some(ind.len());
-            out.push(format!("{ind}class {}", rest));
+            if name.is_empty() || rest[name.len()..].contains('[') {
+                return unsupported("parametric struct");
+            }
+            out.push(format!("{ind}class {name}:"));
             continue;
         }
         let in_struct = struct_indent.is_some();
-        if t.starts_with("trait ") {
-            return unsupported("trait");
-        }
-        if t.starts_with('@') {
-            return unsupported("@decorator");
-        }
         let mut line = body.to_string();
         if t.starts_with("fn ") || t.starts_with("def ") {
+            let name_part = t.split('(').next().unwrap_or("");
+            if name_part.contains('[') {
+                return unsupported("parametric function");
+            }
             line = line.replacen("fn ", "def ", 1);
             line = drop_conventions(&line);
             line = line.replace(" raises:", ":").replace(" raises ->", " ->");
         } else if let Some(rest) = t.strip_prefix("var ").or_else(|| t.strip_prefix("let ")) {
             line = rest.to_string();
-            // `var x: Int = 5` -> `x: int = 5` (annotation kept); `var x: Int` alone has no value -> unsupported
             if !line.contains('=') && !in_struct {
                 return unsupported("declaration without a value");
             }
         } else if let Some(rest) = t.strip_prefix("alias ") {
             line = rest.to_string();
         }
-        out.push(format!("{ind}{}", map_type_words(&line)));
+        out.push(format!("{ind}{}", map_type_words(&rewrite_ctors(&line))));
     }
     Ok(out.join("\n"))
 }
@@ -107,20 +195,24 @@ mod tests {
     #[test]
     fn fn_var_types() {
         let s = "fn add(x: Int, y: Int) -> Int:\n    var z = x + y\n    return z\n";
-        let p = to_python(s).unwrap();
-        assert_eq!(p, "def add(x: int, y: int) -> int:\n    z = x + y\n    return z");
+        assert_eq!(to_python(s).unwrap(), "def add(x: int, y: int) -> int:\n    z = x + y\n    return z");
     }
     #[test]
     fn conventions_and_raises() {
         assert_eq!(to_python("fn f(inout a: Int, borrowed b: Float64) raises -> Int:").unwrap(), "def f(a: int, b: float) -> int:");
     }
     #[test]
-    fn struct_lowered() {
-        assert_eq!(to_python("struct P:
-    var x: Int").unwrap(), "class P:
-    x: int");
-        assert!(to_python("struct P(Copyable):
-    var x: Int").is_err());
+    fn struct_and_trait() {
+        assert_eq!(to_python("struct P(Stringable, Copyable):\n    var x: Int").unwrap(), "class P:\n    x: int");
+        assert_eq!(to_python("trait T:\n    fn f(self): ...\nvar a = 1").unwrap(), "a = 1");
+        assert!(to_python("@weird\nfn f(): pass").is_err());
+        assert_eq!(to_python("@value\nstruct P:\n    var x: Int").unwrap(), "class P:\n    x: int");
+    }
+    #[test]
+    fn ctors() {
+        assert_eq!(to_python("var a = List[Int](1, 2, 3)").unwrap(), "a = [1, 2, 3]");
+        assert_eq!(to_python("var d = Dict[String, Int]()").unwrap(), "d = {}");
+        assert_eq!(to_python("var v = SIMD[DType.float64, 2](1.0, 2.0)").unwrap(), "v = simd(1.0, 2.0)");
     }
     #[test]
     fn strings_untouched() {

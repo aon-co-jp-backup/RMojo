@@ -10,6 +10,27 @@ use rustpython_parser::Parse;
 use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering as AOrd};
+
+/// Mojo mode (.mojo files): assignment from an lvalue copies lists/dicts/structs (value semantics).
+static COPY_MODE: AtomicBool = AtomicBool::new(false);
+
+fn mc(e: E) -> E {
+    if COPY_MODE.load(AOrd::Relaxed) && matches!(e, E::Local(_) | E::Global(_) | E::Attr(..) | E::Index(..)) {
+        E::Builtin("__copy", vec![e])
+    } else {
+        e
+    }
+}
+
+fn deep_copy(v: &V) -> V {
+    match v {
+        V::L(l) => V::L(Rc::new(std::cell::RefCell::new(l.borrow().iter().map(deep_copy).collect()))),
+        V::D(d) => V::D(Rc::new(std::cell::RefCell::new(d.borrow().iter().map(|(k, x)| (k.clone(), deep_copy(x))).collect()))),
+        V::O(o) => V::O(Rc::new(ObjBox { cls: o.cls, f: std::cell::RefCell::new(o.f.borrow().iter().map(deep_copy).collect()) })),
+        other => other.clone(),
+    }
+}
 
 const MAX_DEPTH: usize = 20_000;
 
@@ -20,6 +41,9 @@ enum V {
     B(bool),
     S(Rc<String>),
     O(Rc<ObjBox>),
+    L(Rc<std::cell::RefCell<Vec<V>>>),
+    D(Rc<std::cell::RefCell<Vec<(V, V)>>>),
+    X(Rc<Vec<V>>),
     N,
 }
 
@@ -74,6 +98,10 @@ enum E {
     New(usize, Vec<E>),
     Attr(Box<E>, String),
     Method(Box<E>, String, Vec<E>),
+    List(Vec<E>),
+    Dict(Vec<(E, E)>),
+    Index(Box<E>, Box<E>),
+    In(Box<E>, Box<E>, bool),
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +109,8 @@ enum St {
     SetLocal(usize, E),
     SetGlobal(usize, E),
     SetAttr(E, String, E),
+    SetIndex(E, E, E),
+    ForIn(Vec<Target>, E, Vec<St>),
     Multi(Vec<Target>, Vec<E>),
     Expr(E),
     If(E, Vec<St>, Vec<St>),
@@ -196,6 +226,9 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
             ast::UnaryOp::Not => E::Not(Box::new(cexpr(&u.operand, sc)?)),
             _ => return Err("unsupported unary operator".into()),
         },
+        Expr::Compare(c) if c.ops.len() == 1 && matches!(c.ops[0], ast::CmpOp::In | ast::CmpOp::NotIn) => {
+            E::In(Box::new(cexpr(&c.left, sc)?), Box::new(cexpr(&c.comparators[0], sc)?), matches!(c.ops[0], ast::CmpOp::NotIn))
+        }
         Expr::Compare(c) => {
             let mut rest = Vec::new();
             for (op, r) in c.ops.iter().zip(c.comparators.iter()) {
@@ -220,6 +253,21 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
             }
         }
         Expr::IfExp(i) => E::If(Box::new(cexpr(&i.test, sc)?), Box::new(cexpr(&i.body, sc)?), Box::new(cexpr(&i.orelse, sc)?)),
+        Expr::List(l) => E::List(l.elts.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?),
+        Expr::Dict(d) => {
+            let mut kv = Vec::new();
+            for (k, v) in d.keys.iter().zip(d.values.iter()) {
+                let Some(k) = k else { return Err("dict unpacking (**) is not supported".into()) };
+                kv.push((cexpr(k, sc)?, cexpr(v, sc)?));
+            }
+            E::Dict(kv)
+        }
+        Expr::Subscript(sb) => {
+            if matches!(&*sb.slice, Expr::Slice(_)) {
+                return Err("slicing is not supported yet".into());
+            }
+            E::Index(Box::new(cexpr(&sb.value, sc)?), Box::new(cexpr(&sb.slice, sc)?))
+        }
         Expr::Attribute(a) => E::Attr(Box::new(cexpr(&a.value, sc)?), a.attr.to_string()),
         Expr::Call(c) if matches!(&*c.func, Expr::Attribute(_)) => {
             let Expr::Attribute(a) = &*c.func else { unreachable!() };
@@ -243,6 +291,10 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
                 "str" => "str",
                 "bool" => "bool",
                 "abs" => "abs",
+                "simd" => "simd",
+                "sum" => "sum",
+                "sorted" => "sorted",
+                "list" => "list",
                 "min" => "min",
                 "max" => "max",
                 "len" => "len",
@@ -283,14 +335,19 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                     out.push(St::Multi(tg, vals));
                     continue;
                 }
+                if let Expr::Subscript(sb) = &a.targets[0] {
+                    let v = mc(cexpr(&a.value, sc)?);
+                    out.push(St::SetIndex(cexpr(&sb.value, sc)?, cexpr(&sb.slice, sc)?, v));
+                    continue;
+                }
                 if let Expr::Attribute(at) = &a.targets[0] {
                     let o = cexpr(&at.value, sc)?;
-                    let v = cexpr(&a.value, sc)?;
+                    let v = mc(cexpr(&a.value, sc)?);
                     out.push(St::SetAttr(o, at.attr.to_string(), v));
                     continue;
                 }
                 let Expr::Name(n) = &a.targets[0] else { return Err("only simple names can be assigned".into()) };
-                let v = cexpr(&a.value, sc)?;
+                let v = mc(cexpr(&a.value, sc)?);
                 out.push(match sc.lookup_set(n.id.as_str()) {
                     Target::Local(i) => St::SetLocal(i, v),
                     Target::Global(i) => St::SetGlobal(i, v),
@@ -299,7 +356,7 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
             Stmt::AnnAssign(a) => {
                 let Expr::Name(n) = &*a.target else { return Err("only simple names can be assigned".into()) };
                 if let Some(v) = &a.value {
-                    let v = cexpr(v, sc)?;
+                    let v = mc(cexpr(v, sc)?);
                     out.push(match sc.lookup_set(n.id.as_str()) {
                         Target::Local(i) => St::SetLocal(i, v),
                         Target::Global(i) => St::SetGlobal(i, v),
@@ -309,6 +366,21 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                 }
             }
             Stmt::AugAssign(a) => {
+                if let Expr::Subscript(sb) = &*a.target {
+                    let op = match a.op {
+                        ast::Operator::Add => Bop::Add,
+                        ast::Operator::Sub => Bop::Sub,
+                        ast::Operator::Mult => Bop::Mul,
+                        ast::Operator::Div => Bop::Div,
+                        ast::Operator::FloorDiv => Bop::FloorDiv,
+                        ast::Operator::Mod => Bop::Mod,
+                        _ => return Err("unsupported operator".into()),
+                    };
+                    let cur = E::Index(Box::new(cexpr(&sb.value, sc)?), Box::new(cexpr(&sb.slice, sc)?));
+                    let v = E::Bin(op, Box::new(cur), Box::new(cexpr(&a.value, sc)?));
+                    out.push(St::SetIndex(cexpr(&sb.value, sc)?, cexpr(&sb.slice, sc)?, v));
+                    continue;
+                }
                 if let Expr::Attribute(at) = &*a.target {
                     let op = match a.op {
                         ast::Operator::Add => Bop::Add,
@@ -354,11 +426,27 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                 if !f.orelse.is_empty() {
                     return Err("for/else is not supported".into());
                 }
+                let is_range = matches!(&*f.iter, Expr::Call(c) if matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "range"));
+                if !is_range {
+                    let mut tg = Vec::new();
+                    match &*f.target {
+                        Expr::Name(n) => tg.push(sc.lookup_set(n.id.as_str())),
+                        Expr::Tuple(tt) => {
+                            for e in &tt.elts {
+                                let Expr::Name(n) = e else { return Err("for target must be names".into()) };
+                                tg.push(sc.lookup_set(n.id.as_str()));
+                            }
+                        }
+                        _ => return Err("for target must be a name".into()),
+                    }
+                    let it = cexpr(&f.iter, sc)?;
+                    out.push(St::ForIn(tg, it, cblock(&f.body, sc)?));
+                    continue;
+                }
                 let Expr::Name(t) = &*f.target else { return Err("for target must be a name".into()) };
-                let Expr::Call(c) = &*f.iter else { return Err("only `for x in range(...)` is supported".into()) };
-                let is_range = matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "range");
-                if !is_range || c.args.is_empty() || c.args.len() > 3 {
-                    return Err("only `for x in range(...)` is supported".into());
+                let Expr::Call(c) = &*f.iter else { return Err("unreachable".into()) };
+                if c.args.is_empty() || c.args.len() > 3 {
+                    return Err("range() takes 1 to 3 arguments".into());
                 }
                 let a: Vec<E> = c.args.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?;
                 let (start, stop, step) = match a.len() {
@@ -443,6 +531,14 @@ fn compile(src: &str) -> R<Program> {
                     if let Expr::Name(n) = &*f.target {
                         let k = g.len();
                         g.entry(n.id.to_string()).or_insert(k);
+                    }
+                    if let Expr::Tuple(tt) = &*f.target {
+                        for e in &tt.elts {
+                            if let Expr::Name(n) = e {
+                                let k = g.len();
+                                g.entry(n.id.to_string()).or_insert(k);
+                            }
+                        }
                     }
                     declare(&f.body, g);
                 }
@@ -1055,6 +1151,54 @@ fn pyrepr_f(f: f64) -> String {
     s
 }
 
+fn repr(v: &V) -> String {
+    match v {
+        V::S(s) => {
+            let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+            let mut o = String::new();
+            o.push(q);
+            for c in s.chars() {
+                match c {
+                    '\\' => o.push_str("\\\\"),
+                    '\n' => o.push_str("\\n"),
+                    '\t' => o.push_str("\\t"),
+                    c if c == q => {
+                        o.push('\\');
+                        o.push(c)
+                    }
+                    c => o.push(c),
+                }
+            }
+            o.push(q);
+            o
+        }
+        V::X(x) => format!("[{}]", x.iter().map(repr).collect::<Vec<_>>().join(", ")),
+        V::L(l) => format!("[{}]", l.borrow().iter().map(repr).collect::<Vec<_>>().join(", ")),
+        V::D(d) => format!("{{{}}}", d.borrow().iter().map(|(k, v)| format!("{}: {}", repr(k), repr(v))).collect::<Vec<_>>().join(", ")),
+        other => show(other),
+    }
+}
+
+fn veq(a: &V, b: &V) -> bool {
+    match (a, b) {
+        (V::L(x), V::L(y)) => {
+            let (x, y) = (x.borrow(), y.borrow());
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| veq(p, q))
+        }
+        (V::N, V::N) => true,
+        _ => compare(Cop::Eq, a, b).unwrap_or(false),
+    }
+}
+
+fn norm_index(i: i64, len: usize) -> Option<usize> {
+    let n = if i < 0 { i + len as i64 } else { i };
+    if n >= 0 && (n as usize) < len {
+        Some(n as usize)
+    } else {
+        None
+    }
+}
+
 fn show(v: &V) -> String {
     match v {
         V::I(i) => i.to_string(),
@@ -1062,6 +1206,7 @@ fn show(v: &V) -> String {
         V::B(b) => if *b { "True".into() } else { "False".into() },
         V::S(s) => s.as_str().to_string(),
         V::O(_) => "<object>".into(),
+        V::L(_) | V::D(_) | V::X(_) => repr(v),
         V::N => "None".into(),
     }
 }
@@ -1073,6 +1218,9 @@ fn truthy(v: &V) -> bool {
         V::B(b) => *b,
         V::S(s) => !s.is_empty(),
         V::O(_) => true,
+        V::X(x) => !x.is_empty(),
+        V::L(l) => !l.borrow().is_empty(),
+        V::D(d) => !d.borrow().is_empty(),
         V::N => false,
     }
 }
@@ -1095,6 +1243,20 @@ fn int_of(v: &V) -> Option<i64> {
 }
 
 fn binop(op: Bop, a: V, b: V) -> R<V> {
+    if matches!(a, V::X(_)) || matches!(b, V::X(_)) {
+        let (la, lb) = (match &a { V::X(x) => x.len(), _ => 0 }, match &b { V::X(x) => x.len(), _ => 0 });
+        if la != 0 && lb != 0 && la != lb {
+            return Err("ValueError: SIMD width mismatch".into());
+        }
+        let n = la.max(lb);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = match &a { V::X(x) => x[i].clone(), o => o.clone() };
+            let y = match &b { V::X(y) => y[i].clone(), o => o.clone() };
+            out.push(binop(op, x, y)?);
+        }
+        return Ok(V::X(Rc::new(out)));
+    }
     if let (Some(x), Some(y)) = (int_of(&a), int_of(&b)) {
         let ovf = || "OverflowError: integer overflow (RMojo integers are 64-bit)".to_string();
         return Ok(match op {
@@ -1130,6 +1292,11 @@ fn binop(op: Bop, a: V, b: V) -> R<V> {
                 }
             }
         });
+    }
+    if let (V::L(x), V::L(y), Bop::Add) = (&a, &b, op) {
+        let mut n = x.borrow().clone();
+        n.extend(y.borrow().iter().cloned());
+        return Ok(V::L(Rc::new(std::cell::RefCell::new(n))));
     }
     if let (V::S(x), V::S(y), Bop::Add) = (&a, &b, op) {
         return Ok(V::S(Rc::new(format!("{x}{y}"))));
@@ -1206,6 +1373,17 @@ fn compare(op: Cop, a: &V, b: &V) -> R<bool> {
 }
 
 impl<'p> Vm<'p> {
+    /// `str()`/`print()` of a value; structs with a `__str__` method use it (Mojo `Stringable`).
+    fn show_vm(&mut self, v: &V) -> R<String> {
+        if let V::O(ob) = v {
+            if let Some(&fi) = self.p.classes[ob.cls].methods.get("__str__") {
+                let r = self.call_values(fi, vec![v.clone()])?;
+                return Ok(show(&r));
+            }
+        }
+        Ok(show(v))
+    }
+
     fn call_values(&mut self, fi: usize, vals: Vec<V>) -> R<V> {
         let f = &self.p.funcs[fi];
         if vals.len() != f.nparams {
@@ -1370,6 +1548,72 @@ impl<'p> Vm<'p> {
                     _ => V::N,
                 }
             }
+            E::List(items) => {
+                let mut v = Vec::with_capacity(items.len());
+                for i in items.iter() {
+                    v.push(self.eval(i, base)?);
+                }
+                V::L(Rc::new(std::cell::RefCell::new(v)))
+            }
+            E::Dict(kv) => {
+                let mut d: Vec<(V, V)> = Vec::new();
+                for (k, v) in kv.iter() {
+                    let (k, v) = (self.eval(k, base)?, self.eval(v, base)?);
+                    match d.iter().position(|(x, _)| veq(x, &k)) {
+                        Some(i) => d[i].1 = v,
+                        None => d.push((k, v)),
+                    }
+                }
+                V::D(Rc::new(std::cell::RefCell::new(d)))
+            }
+            E::Index(o, i) => {
+                let ov = self.eval(o, base)?;
+                let iv = self.eval(i, base)?;
+                match (&ov, &iv) {
+                    (V::L(l), _) => {
+                        let Some(ix) = int_of(&iv) else { return Err("TypeError: list indices must be integers".into()) };
+                        let l = l.borrow();
+                        match norm_index(ix, l.len()) {
+                            Some(k) => l[k].clone(),
+                            None => return Err("IndexError: list index out of range".into()),
+                        }
+                    }
+                    (V::X(x), _) => {
+                        let Some(ix) = int_of(&iv) else { return Err("TypeError: SIMD indices must be integers".into()) };
+                        match norm_index(ix, x.len()) {
+                            Some(k) => x[k].clone(),
+                            None => return Err("IndexError: SIMD index out of range".into()),
+                        }
+                    }
+                    (V::D(d), _) => match d.borrow().iter().find(|(k, _)| veq(k, &iv)) {
+                        Some((_, v)) => v.clone(),
+                        None => return Err(format!("KeyError: {}", repr(&iv)).into()),
+                    },
+                    (V::S(st), _) => {
+                        let Some(ix) = int_of(&iv) else { return Err("TypeError: string indices must be integers".into()) };
+                        let cs: Vec<char> = st.chars().collect();
+                        match norm_index(ix, cs.len()) {
+                            Some(k) => V::S(Rc::new(cs[k].to_string())),
+                            None => return Err("IndexError: string index out of range".into()),
+                        }
+                    }
+                    _ => return Err("TypeError: object is not subscriptable".into()),
+                }
+            }
+            E::In(x, c, neg) => {
+                let xv = self.eval(x, base)?;
+                let cv = self.eval(c, base)?;
+                let found = match &cv {
+                    V::L(l) => l.borrow().iter().any(|e| veq(e, &xv)),
+                    V::D(d) => d.borrow().iter().any(|(k, _)| veq(k, &xv)),
+                    V::S(h) => match &xv {
+                        V::S(n) => h.contains(n.as_str()),
+                        _ => return Err("TypeError: 'in <string>' requires string as left operand".into()),
+                    },
+                    _ => return Err("TypeError: argument of type is not iterable".into()),
+                };
+                V::B(found != *neg)
+            }
             E::Attr(o, name) => match self.eval(o, base)? {
                 V::O(ob) => {
                     let idx = self.p.classes[ob.cls].fields.iter().position(|f| f == name).ok_or_else(|| format!("AttributeError: no attribute '{name}'"))?;
@@ -1404,6 +1648,13 @@ impl<'p> Vm<'p> {
             }
             E::Method(o, name, args) => {
                 let ov = self.eval(o, base)?;
+                if !matches!(ov, V::O(_)) {
+                    let mut vals = Vec::new();
+                    for a in args.iter() {
+                        vals.push(self.eval(a, base)?);
+                    }
+                    return builtin_method(&ov, name, vals);
+                }
                 let V::O(ob) = &ov else { return Err(format!("AttributeError: no method '{name}'").into()) };
                 let fi = *self.p.classes[ob.cls].methods.get(name).ok_or_else(|| format!("AttributeError: no method '{name}'"))?;
                 let mut all = vec![ov.clone()];
@@ -1421,8 +1672,14 @@ impl<'p> Vm<'p> {
 
     fn builtin(&mut self, name: &str, a: Vec<V>) -> R<V> {
         Ok(match name {
+            "__copy" => deep_copy(a.first().unwrap_or(&V::N)),
+            "simd" => V::X(Rc::new(a)),
             "print" => {
-                let s = a.iter().map(show).collect::<Vec<_>>().join(" ");
+                let mut parts = Vec::new();
+                for v in a.iter() {
+                    parts.push(self.show_vm(v)?);
+                }
+                let s = parts.join(" ");
                 writeln!(self.out, "{s}").map_err(|e| Er::from(e.to_string()))?;
                 V::N
             }
@@ -1438,7 +1695,7 @@ impl<'p> Vm<'p> {
                 Some(V::S(s)) => V::F(s.trim().parse::<f64>().map_err(|_| format!("ValueError: could not convert string to float: '{s}'"))?),
                 _ => return Err("TypeError: float() argument".into()),
             },
-            "str" => V::S(Rc::new(show(a.first().unwrap_or(&V::N)))),
+            "str" => V::S(Rc::new(self.show_vm(a.first().unwrap_or(&V::N))?)),
             "bool" => V::B(truthy(a.first().unwrap_or(&V::B(false)))),
             "abs" => match a.first() {
                 Some(V::I(i)) => V::I(i.checked_abs().ok_or("OverflowError: integer overflow")?),
@@ -1447,8 +1704,31 @@ impl<'p> Vm<'p> {
             },
             "len" => match a.first() {
                 Some(V::S(s)) => V::I(s.chars().count() as i64),
+                Some(V::L(l)) => V::I(l.borrow().len() as i64),
+                Some(V::X(x)) => V::I(x.len() as i64),
+                Some(V::D(d)) => V::I(d.borrow().len() as i64),
                 _ => return Err("TypeError: len() argument".into()),
             },
+            "sum" => {
+                let Some(V::L(l)) = a.first() else { return Err("TypeError: sum() argument".into()) };
+                let mut acc = V::I(0);
+                for v in l.borrow().iter() {
+                    acc = binop(Bop::Add, acc, v.clone())?;
+                }
+                acc
+            }
+            "list" => match a.first() {
+                Some(V::L(l)) => V::L(Rc::new(std::cell::RefCell::new(l.borrow().clone()))),
+                Some(V::D(d)) => V::L(Rc::new(std::cell::RefCell::new(d.borrow().iter().map(|(k, _)| k.clone()).collect()))),
+                None => V::L(Rc::new(std::cell::RefCell::new(Vec::new()))),
+                _ => return Err("TypeError: list() argument".into()),
+            },
+            "sorted" => {
+                let Some(V::L(l)) = a.first() else { return Err("TypeError: sorted() argument".into()) };
+                let mut v = l.borrow().clone();
+                sort_values(&mut v)?;
+                V::L(Rc::new(std::cell::RefCell::new(v)))
+            }
             "min" | "max" => {
                 if a.is_empty() {
                     return Err(format!("TypeError: {name}() expected arguments").into());
@@ -1532,6 +1812,60 @@ impl<'p> Vm<'p> {
                         };
                     }
                 }
+                St::SetIndex(o, i, e) => {
+                    let ov = self.eval(o, base)?;
+                    let iv = self.eval(i, base)?;
+                    let v = self.eval(e, base)?;
+                    match &ov {
+                        V::L(l) => {
+                            let Some(ix) = int_of(&iv) else { return Err("TypeError: list indices must be integers".into()) };
+                            let mut l = l.borrow_mut();
+                            let n = l.len();
+                            match norm_index(ix, n) {
+                                Some(k) => l[k] = v,
+                                None => return Err("IndexError: list assignment index out of range".into()),
+                            }
+                        }
+                        V::D(d) => {
+                            let mut d = d.borrow_mut();
+                            match d.iter().position(|(k, _)| veq(k, &iv)) {
+                                Some(k) => d[k].1 = v,
+                                None => d.push((iv, v)),
+                            }
+                        }
+                        _ => return Err("TypeError: object does not support item assignment".into()),
+                    }
+                }
+                St::ForIn(tg, it, b) => {
+                    let itv = self.eval(it, base)?;
+                    let items: Vec<V> = match &itv {
+                        V::L(l) => l.borrow().clone(),
+                        V::D(d) => d.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                        V::S(st) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
+                        _ => return Err("TypeError: object is not iterable".into()),
+                    };
+                    for item in items {
+                        let parts: Vec<V> = if tg.len() == 1 {
+                            vec![item]
+                        } else {
+                            match &item {
+                                V::L(p) if p.borrow().len() == tg.len() => p.borrow().clone(),
+                                _ => return Err("ValueError: cannot unpack for-loop item".into()),
+                            }
+                        };
+                        for (t, v) in tg.iter().zip(parts) {
+                            match t {
+                                Target::Local(k) => self.stack[base + *k] = v,
+                                Target::Global(k) => self.globals[*k] = v,
+                            }
+                        }
+                        match self.exec_block(b, base)? {
+                            Flow::Break => break,
+                            Flow::Return(v) => return Ok(Flow::Return(v)),
+                            _ => {}
+                        }
+                    }
+                }
                 St::SetAttr(o, name, e) => {
                     let ov = self.eval(o, base)?;
                     let v = self.eval(e, base)?;
@@ -1551,6 +1885,151 @@ impl<'p> Vm<'p> {
             }
         }
         Ok(Flow::Next)
+    }
+}
+
+fn sort_values(v: &mut Vec<V>) -> R<()> {
+    let mut err: Option<Er> = None;
+    v.sort_by(|a, b| match compare(Cop::Lt, a, b) {
+        Ok(true) => std::cmp::Ordering::Less,
+        Ok(false) => match compare(Cop::Gt, a, b) {
+            Ok(true) => std::cmp::Ordering::Greater,
+            Ok(false) => std::cmp::Ordering::Equal,
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        },
+        Err(e) => {
+            err = Some(e);
+            std::cmp::Ordering::Equal
+        }
+    });
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn new_list(v: Vec<V>) -> V {
+    V::L(Rc::new(std::cell::RefCell::new(v)))
+}
+
+fn builtin_method(o: &V, name: &str, a: Vec<V>) -> R<V> {
+    let nomethod = || Er::from(format!("AttributeError: no method '{name}'"));
+    match o {
+        V::L(l) => Ok(match (name, a.as_slice()) {
+            ("append", [x]) => {
+                l.borrow_mut().push(x.clone());
+                V::N
+            }
+            ("extend", [V::L(o2)]) => {
+                let add = o2.borrow().clone();
+                l.borrow_mut().extend(add);
+                V::N
+            }
+            ("insert", [i, x]) => {
+                let n = l.borrow().len() as i64;
+                let i = int_of(i).ok_or("TypeError: index must be int")?;
+                let k = if i < 0 { (i + n).max(0) } else { i.min(n) } as usize;
+                l.borrow_mut().insert(k, x.clone());
+                V::N
+            }
+            ("pop", rest) if rest.len() <= 1 => {
+                let n = l.borrow().len();
+                if n == 0 {
+                    return Err("IndexError: pop from empty list".into());
+                }
+                let i = match rest.first() {
+                    Some(v) => int_of(v).ok_or("TypeError: index must be int")?,
+                    None => -1,
+                };
+                let k = norm_index(i, n).ok_or("IndexError: pop index out of range")?;
+                l.borrow_mut().remove(k)
+            }
+            ("clear", []) => {
+                l.borrow_mut().clear();
+                V::N
+            }
+            ("reverse", []) => {
+                l.borrow_mut().reverse();
+                V::N
+            }
+            ("sort", []) => {
+                let mut v = l.borrow().clone();
+                sort_values(&mut v)?;
+                *l.borrow_mut() = v;
+                V::N
+            }
+            ("index", [x]) => match l.borrow().iter().position(|e| veq(e, x)) {
+                Some(k) => V::I(k as i64),
+                None => return Err("ValueError: value is not in list".into()),
+            },
+            ("count", [x]) => V::I(l.borrow().iter().filter(|e| veq(e, x)).count() as i64),
+            _ => return Err(nomethod()),
+        }),
+        V::D(d) => Ok(match (name, a.as_slice()) {
+            ("get", [k]) | ("get", [k, _]) => {
+                let dflt = a.get(1).cloned().unwrap_or(V::N);
+                let r = d.borrow().iter().find(|(x, _)| veq(x, k)).map(|(_, v)| v.clone());
+                r.unwrap_or(dflt)
+            }
+            ("keys", []) => new_list(d.borrow().iter().map(|(k, _)| k.clone()).collect()),
+            ("values", []) => new_list(d.borrow().iter().map(|(_, v)| v.clone()).collect()),
+            ("items", []) => new_list(d.borrow().iter().map(|(k, v)| new_list(vec![k.clone(), v.clone()])).collect()),
+            ("pop", [k]) => {
+                let pos = d.borrow().iter().position(|(x, _)| veq(x, k));
+                match pos {
+                    Some(i) => d.borrow_mut().remove(i).1,
+                    None => return Err(format!("KeyError: {}", repr(k)).into()),
+                }
+            }
+            ("clear", []) => {
+                d.borrow_mut().clear();
+                V::N
+            }
+            _ => return Err(nomethod()),
+        }),
+        V::X(x) => Ok(match (name, a.as_slice()) {
+            ("reduce_add", []) => {
+                let mut acc = x.first().cloned().ok_or("ValueError: empty SIMD")?;
+                for v in x.iter().skip(1) {
+                    acc = binop(Bop::Add, acc, v.clone())?;
+                }
+                acc
+            }
+            ("reduce_mul", []) => {
+                let mut acc = x.first().cloned().ok_or("ValueError: empty SIMD")?;
+                for v in x.iter().skip(1) {
+                    acc = binop(Bop::Mul, acc, v.clone())?;
+                }
+                acc
+            }
+            _ => return Err(nomethod()),
+        }),
+        V::S(s) => Ok(match (name, a.as_slice()) {
+            ("upper", []) => V::S(Rc::new(s.to_uppercase())),
+            ("lower", []) => V::S(Rc::new(s.to_lowercase())),
+            ("strip", []) => V::S(Rc::new(s.trim().to_string())),
+            ("startswith", [V::S(p)]) => V::B(s.starts_with(p.as_str())),
+            ("endswith", [V::S(p)]) => V::B(s.ends_with(p.as_str())),
+            ("find", [V::S(p)]) => V::I(s.find(p.as_str()).map(|b| s[..b].chars().count() as i64).unwrap_or(-1)),
+            ("replace", [V::S(x), V::S(y)]) => V::S(Rc::new(s.replace(x.as_str(), y.as_str()))),
+            ("split", []) => new_list(s.split_whitespace().map(|w| V::S(Rc::new(w.to_string()))).collect()),
+            ("split", [V::S(sep)]) if !sep.is_empty() => new_list(s.split(sep.as_str()).map(|w| V::S(Rc::new(w.to_string()))).collect()),
+            ("join", [V::L(l)]) => {
+                let mut parts = Vec::new();
+                for v in l.borrow().iter() {
+                    match v {
+                        V::S(x) => parts.push(x.as_str().to_string()),
+                        _ => return Err("TypeError: join() expects strings".into()),
+                    }
+                }
+                V::S(Rc::new(parts.join(s.as_str())))
+            }
+            _ => return Err(nomethod()),
+        }),
+        _ => Err(nomethod()),
     }
 }
 
@@ -1575,7 +2054,7 @@ mod mojo_syntax;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("rmojo 0.1.4 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo 0.2.0 (Rust, no C++)"),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,
@@ -1585,6 +2064,7 @@ fn main() {
                 }
             };
             let src = if args[2].ends_with(".mojo") || args[2].ends_with(".🔥") {
+                COPY_MODE.store(true, AOrd::Relaxed);
                 match mojo_syntax::to_python(&src) {
                     Ok(s) => s,
                     Err(e) => {

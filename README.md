@@ -26,6 +26,13 @@ Subset of Python syntax; 64-bit integers (overflow is an error); no lists/dicts/
 
 **Mojo互換 / Mojo compatibility (honest)**: 現状は Python構文のサブセットで、Mojoの `fn` / `struct` / `var` / SIMD 等は未対応。互換はこれから広げる目標。 / Currently a Python-syntax subset; Mojo's `fn` / `struct` / `var` / SIMD are not supported yet. Compatibility is a goal to be widened. 未検証: UNIX(BSD等)、TV、iOS/Androidの実機。 / Unverified: BSD/UNIX, TV, real iOS/Android devices.
 
-**Mojo構文 / Mojo syntax**: `.mojo` ファイルは `fn` / `var` / `let` / `alias` / 引数規約(`inout` 等) / 型名(Int, Float64, String, Bool) を受け付ける(`src/mojo_syntax.rs`)。`struct`(フィールドは`var`、メソッドは`fn`、参照セマンティクス)も動く(`tests/mojo_struct.mojo`)。`trait` / `@decorator` / 継承リスト付きstructはエラーとして明示的に拒否(未対応)。値渡し(コピー)・`__copyinit__`・パラメータ化は未対応。 / `.mojo` files accept `fn`, `var`, `let`, `alias`, argument conventions and Mojo type names; `struct` works (fields via `var`, methods via `fn`, reference semantics); `trait`/`@decorator`/structs with trait lists are rejected explicitly; value-copy semantics, `__copyinit__` and parameters are not supported.
+**Mojo構文 / Mojo syntax**: `.mojo` ファイルで次が動く(`src/mojo_syntax.rs`、テストは `tests/mojo_*.mojo` と `*.expected`)。 / Working in `.mojo` files:
+- `fn` / `var` / `let` / `alias` / 引数規約(`inout` 等) / 型名(Int, Float64, String, Bool)
+- `struct`(`var`フィールド、`fn`メソッド、`__init__`、`__str__`=`print`に反映、`@value`=フィールド順のコンストラクタ)
+- **値渡し(コピー)**: `var b = a` はリスト・辞書・structを深いコピーにする(`.py`ファイルは従来どおり参照)
+- `trait` ブロックと適合リスト `struct P(Shape)` は受け付けるが**適合の検査はしない**(ダックタイピング)
+- `List[T](...)` / `Dict[K, V]()` / `SIMD[T, n](...)`(要素ごとの演算、`reduce_add`、添字。**SIMD命令ではなく通常の計算**であり高速化はしない)
+- リスト・辞書・文字列メソッド(append/pop/insert/sort/get/keys/values/items/split/join等)、`for x in リスト/辞書/文字列`、`in`、`len/sum/sorted/list`(`tests/t3_collections.py`はCPythonと差分0)
+- **未対応**: スライス、タプル型、パラメータ化(`fn f[T: ...]`・`struct S[T]`)、他のデコレーター、ポインタ、Mojoモジュールのimport、`def`の引数型検査(型は注釈のみで検査しない)、整数は64bit。 / Not supported: slices, tuples as a type, parametric fn/struct, other decorators, pointers, Mojo module imports, type checking of annotations; integers are 64-bit.
 
 **BSD/UNIX**: FreeBSD・NetBSD・illumos向けに `cargo check` が通る(`scripts/bsd-check.sh`)。実機・VMでの実行は未確認。 / `cargo check` passes for FreeBSD, NetBSD and illumos; not run on real systems. **TV (Android TV)**: 同じAndroidバイナリを使う想定、実機・エミュレーター未確認。 / **iPhone/iPad**: コンパイル確認のみ。
