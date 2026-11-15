@@ -121,6 +121,40 @@ fn rewrite_ctors(line: &str) -> String {
     out
 }
 
+/// Drop `[T: Trait, ...]` parameter lists (RMojo is duck typed): `fn f[T: X](..)`, `struct S[T: X]:`, and explicit
+/// instantiations such as `f[Int](x)` / `Pair[Int, String](1, "a")` (bracket content starting with an upper-case type word).
+fn strip_params(line: &str, decl: bool) -> String {
+    let cs: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '[' && i > 0 && (cs[i - 1].is_alphanumeric() || cs[i - 1] == '_') {
+            let mut j = i;
+            let mut d = 0;
+            while j < cs.len() {
+                if cs[j] == '[' {
+                    d += 1;
+                } else if cs[j] == ']' {
+                    d -= 1;
+                    if d == 0 {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            let upper = cs.get(i + 1).map(|c| c.is_uppercase()).unwrap_or(false);
+            let call_next = cs.get(j + 1) == Some(&'(');
+            if j < cs.len() && ((decl && (call_next || cs.get(j + 1) == Some(&':'))) || (upper && call_next)) {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(cs[i]);
+        i += 1;
+    }
+    out
+}
+
 pub fn to_python(src: &str) -> Result<String, String> {
     let mut out = Vec::new();
     let mut struct_indent: Option<usize> = None;
@@ -146,13 +180,16 @@ pub fn to_python(src: &str) -> Result<String, String> {
         } else if trait_indent.is_some() {
             continue;
         }
+        if t.starts_with("from ") && t.contains(" import ") || t.starts_with("import ") {
+            continue; // Mojo std imports: the supported names are builtins in RMojo
+        }
         if t.starts_with("trait ") {
             trait_indent = Some(ind.len());
             continue;
         }
         if t.starts_with('@') {
             let d = t.trim_start_matches('@').split(['(', ' ']).next().unwrap_or("");
-            if matches!(d, "value" | "always_inline" | "no_inline" | "register_passable" | "staticmethod" | "nonmaterializable") {
+            if matches!(d, "value" | "always_inline" | "no_inline" | "register_passable" | "staticmethod" | "nonmaterializable" | "parameter" | "export") {
                 continue;
             }
             return unsupported(&format!("@{d}"));
@@ -160,19 +197,23 @@ pub fn to_python(src: &str) -> Result<String, String> {
         if let Some(rest) = t.strip_prefix("struct ") {
             let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             struct_indent = Some(ind.len());
-            if name.is_empty() || rest[name.len()..].contains('[') {
-                return unsupported("parametric struct");
+            if name.is_empty() {
+                return unsupported("struct");
             }
             out.push(format!("{ind}class {name}:"));
             continue;
         }
         let in_struct = struct_indent.is_some();
         let mut line = body.to_string();
-        if t.starts_with("fn ") || t.starts_with("def ") {
-            let name_part = t.split('(').next().unwrap_or("");
-            if name_part.contains('[') {
-                return unsupported("parametric function");
+        if let Some(rest) = t.strip_prefix("except ") {
+            // Mojo: `except e:` binds the error; Python: `except Type as e:`
+            let r = rest.trim_end_matches(':').trim();
+            if !r.is_empty() && !r.contains(' ') && !r.contains('(') {
+                line = format!("except Exception as {r}:");
             }
+        }
+        if t.starts_with("fn ") || t.starts_with("def ") {
+            line = strip_params(&line, true);
             line = line.replacen("fn ", "def ", 1);
             line = drop_conventions(&line);
             line = line.replace(" raises:", ":").replace(" raises ->", " ->");
@@ -184,7 +225,7 @@ pub fn to_python(src: &str) -> Result<String, String> {
         } else if let Some(rest) = t.strip_prefix("alias ") {
             line = rest.to_string();
         }
-        out.push(format!("{ind}{}", map_type_words(&rewrite_ctors(&line))));
+        out.push(format!("{ind}{}", map_type_words(&strip_params(&rewrite_ctors(&line), false))));
     }
     Ok(out.join("\n"))
 }
@@ -205,6 +246,8 @@ mod tests {
     fn struct_and_trait() {
         assert_eq!(to_python("struct P(Stringable, Copyable):\n    var x: Int").unwrap(), "class P:\n    x: int");
         assert_eq!(to_python("trait T:\n    fn f(self): ...\nvar a = 1").unwrap(), "a = 1");
+        assert_eq!(to_python("fn f[T: Copyable](x: T) -> T:").unwrap(), "def f(x: T) -> T:");
+        assert_eq!(to_python("var p = Pair[Int, String](1, \"a\")").unwrap(), "p = Pair(1, \"a\")");
         assert!(to_python("@weird\nfn f(): pass").is_err());
         assert_eq!(to_python("@value\nstruct P:\n    var x: Int").unwrap(), "class P:\n    x: int");
     }
