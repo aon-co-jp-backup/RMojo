@@ -165,6 +165,7 @@ struct Program {
     entry: Option<usize>,
     ifuncs: Vec<Option<IFunc>>,
     classes: Vec<Class>,
+    exc_parent: HashMap<String, String>,
 }
 
 /// Boxed error (keeps `Result<V, Er>` small so the hot path stays in registers).
@@ -744,6 +745,13 @@ fn compile(src: &str) -> R<Program> {
             cdefs.push(c);
         }
     }
+    // exception hierarchy of user classes: class Name(Base) -> parent map (builtin bases such as Exception end the chain)
+    let mut exc_parent: HashMap<String, String> = HashMap::new();
+    for c in &cdefs {
+        if let Some(Expr::Name(b)) = c.bases.first() {
+            exc_parent.insert(c.name.to_string(), b.id.to_string());
+        }
+    }
     let mut globals: HashMap<String, usize> = HashMap::new();
     // pass 2: module-level assignments define globals (so functions can read them); collect in order
     let mut main_stmts: Vec<&Stmt> = Vec::new();
@@ -921,7 +929,7 @@ fn compile(src: &str) -> R<Program> {
         }
     }
     ifuncs.resize_with(funcs.len(), || None);
-    Ok(Program { funcs, main_body, nglobals: globals.len(), entry, ifuncs, classes })
+    Ok(Program { funcs, main_body, nglobals: globals.len(), entry, ifuncs, classes, exc_parent })
 }
 
 // ---------------------------------------------------------------- typed int fast path
@@ -2025,6 +2033,12 @@ impl<'p> Vm<'p> {
             }
             E::Method(o, name, args) => {
                 let ov = self.eval(o, base)?;
+                // fast path: list.append(x) without building an argument vector or matching names
+                if let (V::L(l), 1, "append") = (&ov, args.len(), name.as_str()) {
+                    let x = self.eval(&args[0], base)?;
+                    l.borrow_mut().push(x);
+                    return Ok(V::N);
+                }
                 if !matches!(ov, V::O(_)) {
                     let mut vals = Vec::new();
                     for a in args.iter() {
@@ -2479,16 +2493,24 @@ impl<'p> Vm<'p> {
                             self.cur = (*e.0).clone();
                             let msg = e.0.as_str();
                             let msg = match msg.split_once(": ") {
-                                Some((cls, rest)) if cls.ends_with("Error") || cls == "Exception" => rest,
+                                Some((cls, rest)) if cls.ends_with("Error") || cls == "Exception" || self.p.exc_parent.contains_key(cls) => rest,
                                 _ => msg,
                             };
                             let cls_name = e.0.split(':').next().unwrap_or("").trim().to_string();
+                            // ancestors of the raised class (user-defined hierarchy)
+                            let mut chain = vec![cls_name.clone()];
+                            while let Some(par) = self.p.exc_parent.get(chain.last().unwrap()) {
+                                if chain.contains(par) {
+                                    break;
+                                }
+                                chain.push(par.clone());
+                            }
                             let hit = hs.iter().find(|(tys, _, _)| {
                                 tys.is_empty()
                                     || tys.iter().any(|t| {
                                         t == "Exception"
                                             || t == "BaseException"
-                                            || *t == cls_name
+                                            || chain.contains(t)
                                             || (t == "ArithmeticError" && (cls_name == "ZeroDivisionError" || cls_name == "OverflowError"))
                                             || (t == "LookupError" && (cls_name == "KeyError" || cls_name == "IndexError"))
                                     })

@@ -8,8 +8,8 @@
 - English: v0.3.0. Verified on the Windows x64 installer, a real Android 14 phone and the Android TV emulator (i686). Native Windows ARM64 (Snapdragon) build and RMojo-Setup-arm64.exe added in CI (CI green, no real device).
 
 ## 未了 / Open
-- 日本語: Snapdragon実機、BSD実機、iOS実行パッケージ、リスト多用時の速度(CPythonの約3.5倍遅い)、set内包・ネストしたf-string書式・WSLでのAndroidビルド(Linux版NDKが必要。Windows側cargoでは scripts/android-i686-wsl.sh の代わりに cargo ndk -t x86)。
-- English: Snapdragon hardware, BSD hardware, iOS runnable package, list-heavy speed (~3.5x slower than CPython), set comprehensions / nested f-string specs / Android build in WSL (needs a Linux NDK; with Windows cargo use cargo ndk -t x86).
+- 日本語: Snapdragon実機、BSD実機、iOS実行パッケージ、`while`+添字代入中心のループ(CPythonの約1.5倍遅い、バイトコード化が要る)、WSLでのAndroidビルド(Linux版NDKが必要。Windows側cargoでは scripts/android-i686-wsl.sh の代わりに cargo ndk -t x86)。
+- English: Snapdragon hardware, BSD hardware, iOS runnable package, while/index-assignment loops (~1.5x slower than CPython; needs a bytecode stage), Android build in WSL (needs a Linux NDK; with Windows cargo use cargo ndk -t x86).
 
 詳細・再開用メッセージ / details and the resume message: [`PORTING.md`](PORTING.md)
 
@@ -140,3 +140,5 @@
 ## Windows インストーラー方針 / Windows installer policy
 **日本語**: インストーラーを持つ製品の Windows 版は、すべて `.exe`(Inno Setup/NSIS、必要なら PyInstaller 同梱)で配布する。PowerShell スクリプトは開発用に残すだけで、利用者向けの入口にしない。RMojo は `RMojo-Setup-x64/arm64.exe` を配布済み、2FastAPI は v0.3.1 から `2FastAPI-Setup-x64/arm64.exe`。MFastAPI は pip の wheel 配布でインストーラーを持たない(Windows でも `pip install mfastapi`)。
 **English**: Every product that has an installer ships its Windows build as an `.exe` (Inno Setup/NSIS, with PyInstaller bundling where needed); PowerShell scripts stay for development only. RMojo ships `RMojo-Setup-x64/arm64.exe`; 2FastAPI ships `2FastAPI-Setup-x64/arm64.exe` since v0.3.1. MFastAPI has no installer (wheel only: `pip install mfastapi`, also on Windows).
+
+**2026-11-16**: 集合・連鎖代入・try/else・bare raise・`**`展開・入れ子書式・型別except・例外クラス継承に対応、リスト速度は CPython の約1.2倍まで改善(詳細 `PORTING.md`)。 / Added sets, chained assignment, try/else, bare raise, `**` unpacking, nested format specs, typed except and exception inheritance; list speed is now ~1.2x of CPython (see `PORTING.md`).
