@@ -14,7 +14,7 @@ def main():
     try:
         print(1 // 0)
     except ZeroDivisionError as e:
-        print("div", e)
+        print("div caught")
     try:
         xs = [1, 2]
         print(xs[5])
