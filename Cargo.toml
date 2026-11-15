@@ -1,6 +1,6 @@
 [package]
 name = "rmojo"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "RMojo: a Mojo-style language. Python syntax on the surface, a memory-safe Rust implementation inside (no C++). One codebase for Windows, Linux, macOS, Android and iOS."
 license = "MIT"
