@@ -106,6 +106,9 @@ enum E {
     In(Box<E>, Box<E>, bool),
     Tuple(Vec<E>),
     Comp(Vec<(Vec<Target>, E, Vec<E>)>, Box<E>),
+    Fmt(Box<E>, String),
+    Concat(Vec<E>),
+    ToDict(Box<E>),
     Slice(Box<E>, Option<Box<E>>, Option<Box<E>>, Option<Box<E>>),
 }
 
@@ -123,6 +126,7 @@ enum St {
     Expr(E),
     If(E, Vec<St>, Vec<St>),
     While(E, Vec<St>),
+    LoopElse(Box<St>, Vec<St>),
     ForRange(Target, E, E, E, Vec<St>),
     Return(Option<E>),
     Break,
@@ -292,6 +296,61 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
                 gens.push((tg, it, conds));
             }
             E::Comp(gens, Box::new(cexpr(&lc.elt, sc)?))
+        }
+        Expr::JoinedStr(j) => {
+            let mut parts = Vec::new();
+            for v in &j.values {
+                match v {
+                    Expr::FormattedValue(fv) => {
+                        let spec = match &fv.format_spec {
+                            Some(b) => match &**b {
+                                Expr::JoinedStr(js) => {
+                                    let mut t = String::new();
+                                    for x in &js.values {
+                                        if let Expr::Constant(c) = x {
+                                            if let ast::Constant::Str(st) = &c.value {
+                                                t.push_str(st);
+                                            }
+                                        } else {
+                                            return Err("nested format spec is not supported".into());
+                                        }
+                                    }
+                                    t
+                                }
+                                _ => String::new(),
+                            },
+                            None => String::new(),
+                        };
+                        parts.push(E::Fmt(Box::new(cexpr(&fv.value, sc)?), spec));
+                    }
+                    other => parts.push(cexpr(other, sc)?),
+                }
+            }
+            E::Concat(parts)
+        }
+        Expr::DictComp(dc) => {
+            let mut gens = Vec::new();
+            for g in &dc.generators {
+                if g.is_async {
+                    return Err("async comprehension is not supported".into());
+                }
+                let mut tg = Vec::new();
+                match &g.target {
+                    Expr::Name(n) => tg.push(sc.lookup_set(n.id.as_str())),
+                    Expr::Tuple(tt) => {
+                        for e in &tt.elts {
+                            let Expr::Name(n) = e else { return Err("comprehension target must be names".into()) };
+                            tg.push(sc.lookup_set(n.id.as_str()));
+                        }
+                    }
+                    _ => return Err("comprehension target must be a name".into()),
+                }
+                let it = cexpr(&g.iter, sc)?;
+                let conds = g.ifs.iter().map(|c| cexpr(c, sc)).collect::<R<Vec<_>>>()?;
+                gens.push((tg, it, conds));
+            }
+            let pair = E::Tuple(vec![cexpr(&dc.key, sc)?, cexpr(&dc.value, sc)?]);
+            E::ToDict(Box::new(E::Comp(gens, Box::new(pair))))
         }
         Expr::Tuple(t) => E::Tuple(t.elts.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?),
         Expr::Subscript(sb) if matches!(&*sb.slice, Expr::Slice(_)) => {
@@ -513,15 +572,17 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
             }
             Stmt::If(i) => out.push(St::If(cexpr(&i.test, sc)?, cblock(&i.body, sc)?, cblock(&i.orelse, sc)?)),
             Stmt::While(w) => {
-                if !w.orelse.is_empty() {
-                    return Err("while/else is not supported".into());
+                let lp = St::While(cexpr(&w.test, sc)?, cblock(&w.body, sc)?);
+                if w.orelse.is_empty() {
+                    out.push(lp);
+                } else {
+                    out.push(St::LoopElse(Box::new(lp), cblock(&w.orelse, sc)?));
                 }
-                out.push(St::While(cexpr(&w.test, sc)?, cblock(&w.body, sc)?));
             }
             Stmt::For(f) => {
-                if !f.orelse.is_empty() {
-                    return Err("for/else is not supported".into());
-                }
+                let start_len = out.len();
+                let orelse = if f.orelse.is_empty() { Vec::new() } else { cblock(&f.orelse, sc)? };
+                let _ = start_len;
                 let is_range = matches!(&*f.iter, Expr::Call(c) if matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "range"));
                 if !is_range {
                     let mut tg = Vec::new();
@@ -536,7 +597,8 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                         _ => return Err("for target must be a name".into()),
                     }
                     let it = cexpr(&f.iter, sc)?;
-                    out.push(St::ForIn(tg, it, cblock(&f.body, sc)?));
+                    let lp = St::ForIn(tg, it, cblock(&f.body, sc)?);
+                    out.push(if orelse.is_empty() { lp } else { St::LoopElse(Box::new(lp), orelse) });
                     continue;
                 }
                 let Expr::Name(t) = &*f.target else { return Err("for target must be a name".into()) };
@@ -551,7 +613,8 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                     _ => (a[0].clone(), a[1].clone(), a[2].clone()),
                 };
                 let tgt = sc.lookup_set(t.id.as_str());
-                out.push(St::ForRange(tgt, start, stop, step, cblock(&f.body, sc)?));
+                let lp = St::ForRange(tgt, start, stop, step, cblock(&f.body, sc)?);
+                out.push(if orelse.is_empty() { lp } else { St::LoopElse(Box::new(lp), orelse) });
             }
             _ => return Err("unsupported statement".into()),
         }
@@ -1226,6 +1289,7 @@ struct Vm<'p> {
     globals: Vec<V>,
     depth: usize,
     stack: Vec<V>,
+    brk: bool,
     out: std::io::BufWriter<std::io::Stdout>,
 }
 
@@ -1341,6 +1405,92 @@ fn show(v: &V) -> String {
         V::L(_) | V::D(_) | V::X(_) | V::T(_) => repr(v),
         V::N => "None".into(),
     }
+}
+
+fn format_spec(v: &V, spec: &str) -> R<String> {
+    let ch: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+    let (mut fill, mut align) = (' ', None);
+    if ch.len() >= 2 && matches!(ch[1], '<' | '>' | '^') {
+        fill = ch[0];
+        align = Some(ch[1]);
+        i = 2;
+    } else if !ch.is_empty() && matches!(ch[0], '<' | '>' | '^') {
+        align = Some(ch[0]);
+        i = 1;
+    }
+    let mut zero = false;
+    if i < ch.len() && ch[i] == '0' && align.is_none() {
+        zero = true;
+        i += 1;
+    }
+    let mut width = 0usize;
+    while i < ch.len() && ch[i].is_ascii_digit() {
+        width = width * 10 + ch[i].to_digit(10).unwrap() as usize;
+        i += 1;
+    }
+    let mut prec: Option<usize> = None;
+    if i < ch.len() && ch[i] == '.' {
+        i += 1;
+        let mut p = 0usize;
+        while i < ch.len() && ch[i].is_ascii_digit() {
+            p = p * 10 + ch[i].to_digit(10).unwrap() as usize;
+            i += 1;
+        }
+        prec = Some(p);
+    }
+    let ty = if i < ch.len() { Some(ch[i]) } else { None };
+    if i + 1 < ch.len() {
+        return Err("ValueError: unsupported format spec".into());
+    }
+    let mut numeric = false;
+    let body = match (v, ty) {
+        (V::I(n), None | Some('d')) => {
+            numeric = true;
+            n.to_string()
+        }
+        (V::I(n), Some('f')) => {
+            numeric = true;
+            format!("{:.*}", prec.unwrap_or(6), *n as f64)
+        }
+        (V::F(f), Some('f')) => {
+            numeric = true;
+            format!("{:.*}", prec.unwrap_or(6), f)
+        }
+        (V::F(f), None) => {
+            numeric = true;
+            match prec {
+                Some(p) => format!("{:.*}", p, f),
+                None => pyrepr_f(*f),
+            }
+        }
+        (V::S(s), None | Some('s')) => match prec {
+            Some(p) => s.chars().take(p).collect(),
+            None => s.to_string(),
+        },
+        (V::I(n), Some('x')) => format!("{:x}", n),
+        (V::I(n), Some('b')) => format!("{:b}", n),
+        _ => return Err("ValueError: unsupported format spec for this type".into()),
+    };
+    let n = body.chars().count();
+    if n >= width {
+        return Ok(body);
+    }
+    let pad = width - n;
+    if zero && numeric {
+        let (sign, digits) = match body.strip_prefix('-') {
+            Some(r) => ("-", r.to_string()),
+            None => ("", body.clone()),
+        };
+        return Ok(format!("{}{}{}", sign, "0".repeat(pad), digits));
+    }
+    let al = align.unwrap_or(if numeric { '>' } else { '<' });
+    let mk = |k: usize| fill.to_string().repeat(k);
+    Ok(match al {
+        '<' => format!("{}{}", body, mk(pad)),
+        '>' => format!("{}{}", mk(pad), body),
+        _ => format!("{}{}{}", mk(pad / 2), body, mk(pad - pad / 2)),
+    })
 }
 
 fn truthy(v: &V) -> bool {
@@ -1637,6 +1787,36 @@ impl<'p> Vm<'p> {
                 let mut d: Vec<(V, V)> = Vec::new();
                 for (k, v) in kv.iter() {
                     let (k, v) = (self.eval(k, base)?, self.eval(v, base)?);
+                    match d.iter().position(|(x, _)| veq(x, &k)) {
+                        Some(i) => d[i].1 = v,
+                        None => d.push((k, v)),
+                    }
+                }
+                V::D(Rc::new(std::cell::RefCell::new(d)))
+            }
+            E::Fmt(inner, spec) => {
+                let v = self.eval(inner, base)?;
+                if spec.is_empty() {
+                    V::S(Rc::new(self.show_vm(&v)?))
+                } else {
+                    V::S(Rc::new(format_spec(&v, spec)?))
+                }
+            }
+            E::Concat(parts) => {
+                let mut o = String::new();
+                for p in parts.iter() {
+                    let v = self.eval(p, base)?;
+                    o.push_str(&self.show_vm(&v)?);
+                }
+                V::S(Rc::new(o))
+            }
+            E::ToDict(inner) => {
+                let lv = self.eval(inner, base)?;
+                let V::L(l) = &lv else { return Err("TypeError: dict comprehension".into()) };
+                let mut d: Vec<(V, V)> = Vec::new();
+                for item in l.borrow().iter() {
+                    let V::T(kv) = item else { continue };
+                    let (k, v) = (kv[0].clone(), kv[1].clone());
                     match d.iter().position(|(x, _)| veq(x, &k)) {
                         Some(i) => d[i].1 = v,
                         None => d.push((k, v)),
@@ -1975,7 +2155,7 @@ impl<'p> Vm<'p> {
                 let iv = self.eval(i, base)?;
                 return self.index_value(ov, iv);
             }
-            E::List(..) | E::Dict(..) | E::Tuple(..) | E::Slice(..) | E::Comp(..) | E::In(..) | E::Attr(..) | E::New(..) | E::Method(..) => return self.eval_cold(e, base),
+            E::List(..) | E::Dict(..) | E::Tuple(..) | E::Slice(..) | E::Comp(..) | E::Fmt(..) | E::Concat(..) | E::ToDict(..) | E::In(..) | E::Attr(..) | E::New(..) | E::Method(..) => return self.eval_cold(e, base),
             E::Builtin(name, args) => {
                 let vals = args.iter().map(|a| self.eval(a, base)).collect::<R<Vec<_>>>()?;
                 self.builtin(name, vals)?
@@ -2165,6 +2345,7 @@ impl<'p> Vm<'p> {
                         V::S(st) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
                         _ => return Err("TypeError: object is not iterable".into()),
                     };
+                    let mut broke = false;
                     for item in items {
                         let parts: Vec<V> = if tg.len() == 1 {
                             vec![item]
@@ -2182,11 +2363,15 @@ impl<'p> Vm<'p> {
                             }
                         }
                         match self.exec_block(b, base)? {
-                            Flow::Break => break,
+                            Flow::Break => {
+                                broke = true;
+                                break;
+                            }
                             Flow::Return(v) => return Ok(Flow::Return(v)),
                             _ => {}
                         }
                     }
+                    self.brk = broke;
                 }
                 St::SetAttr(o, name, e) => {
                     let ov = self.eval(o, base)?;
@@ -2233,11 +2418,28 @@ impl<'p> Vm<'p> {
                     }
                 }
                 St::While(c, b) => {
+                    let mut broke = false;
                     while self.cond(c, base)? {
                         match self.exec_block(b, base)? {
-                            Flow::Break => break,
+                            Flow::Break => {
+                                broke = true;
+                                break;
+                            }
                             Flow::Return(v) => return Ok(Flow::Return(v)),
                             _ => {}
+                        }
+                    }
+                    self.brk = broke;
+                }
+                St::LoopElse(lp, orelse) => {
+                    match self.exec_block(std::slice::from_ref(&**lp), base)? {
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                        _ => {}
+                    }
+                    if !self.brk {
+                        match self.exec_block(orelse, base)? {
+                            Flow::Next => {}
+                            f => return Ok(f),
                         }
                     }
                 }
@@ -2250,13 +2452,17 @@ impl<'p> Vm<'p> {
                     if st == 0 {
                         return Err("ValueError: range() arg 3 must not be zero".into());
                     }
+                    let mut broke = false;
                     while (st > 0 && i < end) || (st < 0 && i > end) {
                         match t {
                             Target::Local(k) => self.stack[base + *k] = V::I(i),
                             Target::Global(k) => self.globals[*k] = V::I(i),
                         }
                         match self.exec_block(b, base)? {
-                            Flow::Break => break,
+                            Flow::Break => {
+                                broke = true;
+                                break;
+                            }
                             Flow::Return(v) => return Ok(Flow::Return(v)),
                             _ => {}
                         }
@@ -2265,6 +2471,7 @@ impl<'p> Vm<'p> {
                             None => break,
                         };
                     }
+                    self.brk = broke;
                 }
                 St::SetIndex(o, i, e) => {
                     if matches!(o, E::Local(_) | E::Global(_)) {
@@ -2469,7 +2676,7 @@ fn builtin_method(o: &V, name: &str, a: Vec<V>) -> R<V> {
 
 fn run_source(src: &str) -> R<()> {
     let prog = compile(src)?;
-    let mut vm = Vm { p: &prog, globals: vec![V::N; prog.nglobals], depth: 0, stack: Vec::new(), out: std::io::BufWriter::new(std::io::stdout()) };
+    let mut vm = Vm { p: &prog, globals: vec![V::N; prog.nglobals], depth: 0, stack: Vec::new(), brk: false, out: std::io::BufWriter::new(std::io::stdout()) };
     let r = vm.exec_block(&prog.main_body, 0).map(|_| ());
     let r = r.and_then(|_| match prog.entry {
         Some(fi) => {

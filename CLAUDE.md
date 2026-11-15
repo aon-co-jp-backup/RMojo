@@ -8,8 +8,8 @@
 - English: v0.3.0. Verified on the Windows x64 installer, a real Android 14 phone and the Android TV emulator (i686). Native Windows ARM64 (Snapdragon) build and RMojo-Setup-arm64.exe added in CI (CI green, no real device).
 
 ## 未了 / Open
-- 日本語: Snapdragon実機、BSD実機、iOS実行パッケージ、リスト多用時の速度(CPythonの約3.5倍遅い)、dict内包・while/else・f-string等、WSLでのAndroidビルド(Linux版NDKが必要。Windows側cargoでは scripts/android-i686-wsl.sh の代わりに cargo ndk -t x86)。
-- English: Snapdragon hardware, BSD hardware, iOS runnable package, list-heavy speed (~3.5x slower than CPython), dict comprehensions / while-else / f-strings, Android build in WSL (needs a Linux NDK; with Windows cargo use cargo ndk -t x86).
+- 日本語: Snapdragon実機、BSD実機、iOS実行パッケージ、リスト多用時の速度(CPythonの約3.5倍遅い)、set内包・ネストしたf-string書式・WSLでのAndroidビルド(Linux版NDKが必要。Windows側cargoでは scripts/android-i686-wsl.sh の代わりに cargo ndk -t x86)。
+- English: Snapdragon hardware, BSD hardware, iOS runnable package, list-heavy speed (~3.5x slower than CPython), set comprehensions / nested f-string specs / Android build in WSL (needs a Linux NDK; with Windows cargo use cargo ndk -t x86).
 
 詳細・再開用メッセージ / details and the resume message: [`PORTING.md`](PORTING.md)
 
