@@ -143,3 +143,7 @@
 ## 2026-11-16 対応した構文 / Newly supported syntax
 **日本語**: 集合型(`{1,2}`・集合内包表記・`set()`・`in`/`len`/反復・`add`/`remove`/`discard`/`clear`/`union`/`intersection`/`difference`)と連鎖代入(`a = b = v`、名前のみ)を追加。CPython と出力が一致(`tests/t8_sets.py`・`t9_chain.py`、差分0)。**未対応**: `try/else`、引数なしの `raise`、dict の `**` 展開、f文字列の入れ子の書式指定、集合の演算子(`|` `&` `-`)。
 **English**: Added the set type (literals, set comprehensions, `set()`, `in`/`len`/iteration, `add`/`remove`/`discard`/`clear`/`union`/`intersection`/`difference`) and chained assignment (`a = b = v`, names only); output matches CPython (`tests/t8_sets.py`, `t9_chain.py`, 0 differences). **Still unsupported**: `try/else`, bare `raise`, `**` dict unpacking, nested f-string format specs, set operators (`|` `&` `-`).
+
+## 2026-11-16 追加対応(続き) / More syntax supported
+**日本語**: 集合演算子(`|` `&` `^` `-`)、整数のビット演算(`|` `&` `^` `<<` `>>`)、`try/else`、引数なし `raise`(再送出)、dict の `**` 展開、f文字列の入れ子の書式指定(`{x:{w}.{p}f}`)に対応。`tests/t10_flow.py`・`t11_misc.py` を追加し CPython との差分0。**制限**: `except` は型で振り分けず最初のハンドラが受ける(従来どおり)、`raise` の再送出は直近の例外。
+**English**: Added set operators (`|` `&` `^` `-`), integer bit operations (`|` `&` `^` `<<` `>>`), `try/else`, bare `raise` (re-raise), `**` dict unpacking and nested f-string format specs (`{x:{w}.{p}f}`). `tests/t10_flow.py` and `t11_misc.py` added; 0 differences vs CPython. **Limits**: `except` still does not dispatch by exception type (the first handler catches), and a bare `raise` re-raises the most recent exception.

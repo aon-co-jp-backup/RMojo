@@ -133,7 +133,7 @@ enum St {
     SetIndex(E, E, E),
     ForIn(Vec<Target>, E, Vec<St>),
     Unpack(Vec<Target>, E),
-    Try(Vec<St>, Vec<(Option<Target>, Vec<St>)>, Vec<St>),
+    Try(Vec<St>, Vec<(Option<Target>, Vec<St>)>, Vec<St>, Vec<St>),
     Raise(E),
     Multi(Vec<Target>, Vec<E>),
     Expr(E),
@@ -241,6 +241,16 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
                 ast::Operator::FloorDiv => Bop::FloorDiv,
                 ast::Operator::Mod => Bop::Mod,
                 ast::Operator::Pow => Bop::Pow,
+                ast::Operator::BitOr | ast::Operator::BitAnd | ast::Operator::BitXor | ast::Operator::LShift | ast::Operator::RShift => {
+                    let c = match b.op {
+                        ast::Operator::BitOr => "|",
+                        ast::Operator::BitAnd => "&",
+                        ast::Operator::BitXor => "^",
+                        ast::Operator::LShift => "<<",
+                        _ => ">>",
+                    };
+                    return Ok(E::Builtin("__setop", vec![E::Const(V::S(Rc::new(c.to_string()))), cexpr(&b.left, sc)?, cexpr(&b.right, sc)?]));
+                }
                 _ => return Err("unsupported operator".into()),
             };
             E::Bin(op, Box::new(cexpr(&b.left, sc)?), Box::new(cexpr(&b.right, sc)?))
@@ -280,12 +290,27 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
         Expr::IfExp(i) => E::If(Box::new(cexpr(&i.test, sc)?), Box::new(cexpr(&i.body, sc)?), Box::new(cexpr(&i.orelse, sc)?)),
         Expr::List(l) => E::List(l.elts.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?),
         Expr::Dict(d) => {
+            let mut segs: Vec<E> = Vec::new();
             let mut kv = Vec::new();
             for (k, v) in d.keys.iter().zip(d.values.iter()) {
-                let Some(k) = k else { return Err("dict unpacking (**) is not supported".into()) };
-                kv.push((cexpr(k, sc)?, cexpr(v, sc)?));
+                match k {
+                    Some(k) => kv.push((cexpr(k, sc)?, cexpr(v, sc)?)),
+                    None => {
+                        if !kv.is_empty() {
+                            segs.push(E::Dict(std::mem::take(&mut kv)));
+                        }
+                        segs.push(cexpr(v, sc)?);
+                    }
+                }
             }
-            E::Dict(kv)
+            if segs.is_empty() {
+                E::Dict(kv)
+            } else {
+                if !kv.is_empty() {
+                    segs.push(E::Dict(kv));
+                }
+                E::Builtin("__dmerge", segs)
+            }
         }
         Expr::Set(st) => E::ToSet(Box::new(E::List(st.elts.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?))),
         Expr::SetComp(sc_) => {
@@ -339,18 +364,28 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
             for v in &j.values {
                 match v {
                     Expr::FormattedValue(fv) => {
+                        let mut dynspec: Option<E> = None;
                         let spec = match &fv.format_spec {
                             Some(b) => match &**b {
                                 Expr::JoinedStr(js) => {
                                     let mut t = String::new();
+                                    let mut pieces: Vec<E> = Vec::new();
+                                    let mut nested = false;
                                     for x in &js.values {
                                         if let Expr::Constant(c) = x {
                                             if let ast::Constant::Str(st) = &c.value {
                                                 t.push_str(st);
+                                                pieces.push(E::Const(V::S(Rc::new(st.to_string()))));
                                             }
+                                        } else if let Expr::FormattedValue(inner) = x {
+                                            nested = true;
+                                            pieces.push(E::Fmt(Box::new(cexpr(&inner.value, sc)?), String::new()));
                                         } else {
                                             return Err("nested format spec is not supported".into());
                                         }
+                                    }
+                                    if nested {
+                                        dynspec = Some(E::Concat(pieces));
                                     }
                                     t
                                 }
@@ -358,7 +393,10 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
                             },
                             None => String::new(),
                         };
-                        parts.push(E::Fmt(Box::new(cexpr(&fv.value, sc)?), spec));
+                        match dynspec {
+                            Some(d) => parts.push(E::Builtin("__fmtdyn", vec![cexpr(&fv.value, sc)?, d])),
+                            None => parts.push(E::Fmt(Box::new(cexpr(&fv.value, sc)?), spec)),
+                        }
                     }
                     other => parts.push(cexpr(other, sc)?),
                 }
@@ -608,12 +646,9 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                     };
                     out.push(St::Raise(E::Builtin("__raise", vec![E::Const(V::S(Rc::new(name))), arg.unwrap_or(E::Const(V::N))])));
                 }
-                None => return Err("bare `raise` is not supported".into()),
+                None => out.push(St::Raise(E::Builtin("__reraise", vec![]))),
             },
             Stmt::Try(t) => {
-                if !t.orelse.is_empty() {
-                    return Err("try/else is not supported".into());
-                }
                 let body = cblock(&t.body, sc)?;
                 let mut hs = Vec::new();
                 for h in &t.handlers {
@@ -624,7 +659,8 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                     };
                     hs.push((tg, cblock(&h.body, sc)?));
                 }
-                out.push(St::Try(body, hs, cblock(&t.finalbody, sc)?));
+                let els = cblock(&t.orelse, sc)?;
+                out.push(St::Try(body, hs, els, cblock(&t.finalbody, sc)?));
             }
             Stmt::If(i) => out.push(St::If(cexpr(&i.test, sc)?, cblock(&i.body, sc)?, cblock(&i.orelse, sc)?)),
             Stmt::While(w) => {
@@ -1346,6 +1382,7 @@ struct Vm<'p> {
     depth: usize,
     stack: Vec<V>,
     brk: bool,
+    cur: String,
     out: std::io::BufWriter<std::io::Stdout>,
 }
 
@@ -1583,6 +1620,10 @@ fn int_of(v: &V) -> Option<i64> {
 }
 
 fn binop(op: Bop, a: V, b: V) -> R<V> {
+    if let (Bop::Sub, V::Z(x), V::Z(y)) = (op, &a, &b) {
+        let v: Vec<V> = x.borrow().iter().filter(|e| !y.borrow().iter().any(|o| veq(o, e))).cloned().collect();
+        return Ok(V::Z(Rc::new(std::cell::RefCell::new(v))));
+    }
     if matches!(a, V::X(_)) || matches!(b, V::X(_)) {
         let (la, lb) = (match &a { V::X(x) => x.len(), _ => 0 }, match &b { V::X(x) => x.len(), _ => 0 });
         if la != 0 && lb != 0 && la != lb {
@@ -2244,6 +2285,57 @@ impl<'p> Vm<'p> {
                     _ => x.ceil(),
                 })
             }
+            "__fmtdyn" => {
+                let spec = show(&a[1]);
+                if spec.is_empty() {
+                    V::S(Rc::new(show(&a[0])))
+                } else {
+                    V::S(Rc::new(format_spec(&a[0], &spec)?))
+                }
+            }
+            "__dmerge" => {
+                let mut d: Vec<(V, V)> = Vec::new();
+                for part in a.iter() {
+                    let V::D(x) = part else { return Err("TypeError: ** argument must be a dict".into()) };
+                    for (k, v) in x.borrow().iter() {
+                        match d.iter().position(|(q, _)| veq(q, k)) {
+                            Some(i) => d[i].1 = v.clone(),
+                            None => d.push((k.clone(), v.clone())),
+                        }
+                    }
+                }
+                V::D(Rc::new(std::cell::RefCell::new(d)))
+            }
+            "__setop" => {
+                let op = show(&a[0]);
+                match (&a[1], &a[2]) {
+                    (V::Z(x), V::Z(y)) => {
+                        let (x, y) = (x.borrow().clone(), y.borrow().clone());
+                        let v: Vec<V> = match op.as_str() {
+                            "|" => dedup(x.into_iter().chain(y.into_iter()).collect()),
+                            "&" => x.into_iter().filter(|e| y.iter().any(|o| veq(o, e))).collect(),
+                            "^" => {
+                                let mut r: Vec<V> = x.iter().filter(|e| !y.iter().any(|o| veq(o, e))).cloned().collect();
+                                r.extend(y.iter().filter(|e| !x.iter().any(|o| veq(o, e))).cloned());
+                                r
+                            }
+                            _ => return Err("TypeError: unsupported operand types for sets".into()),
+                        };
+                        V::Z(Rc::new(std::cell::RefCell::new(v)))
+                    }
+                    (l, r) => match (int_of(l), int_of(r)) {
+                        (Some(x), Some(y)) => V::I(match op.as_str() {
+                            "|" => x | y,
+                            "&" => x & y,
+                            "^" => x ^ y,
+                            "<<" => x.checked_shl(y as u32).ok_or("OverflowError: shift")?,
+                            _ => x >> (y.min(63) as u32),
+                        }),
+                        _ => return Err("TypeError: unsupported operand types".into()),
+                    },
+                }
+            }
+            "__reraise" => return Err(self.cur.clone().into()),
             "__raise" => {
                 let name = show(&a[0]);
                 return Err(match &a[1] {
@@ -2368,10 +2460,11 @@ impl<'p> Vm<'p> {
                 St::Raise(e) => {
                     self.eval(e, base)?;
                 }
-                St::Try(body, hs, fin) => {
-                    let mut res = self.exec_block(body, base);
+                St::Try(body, hs, els, fin) => {
+                    let mut res = self.exec_block(body, base); let body_ok = res.is_ok();
                     if let Err(e) = &res {
                         if !hs.is_empty() && !e.0.starts_with("RecursionError") {
+                            self.cur = (*e.0).clone();
                             let msg = e.0.as_str();
                             let msg = match msg.split_once(": ") {
                                 Some((cls, rest)) if cls.ends_with("Error") || cls == "Exception" => rest,
@@ -2387,6 +2480,9 @@ impl<'p> Vm<'p> {
                             }
                             res = self.exec_block(hb, base);
                         }
+                    }
+                    if body_ok && matches!(&res, Ok(Flow::Next)) && !els.is_empty() {
+                        res = self.exec_block(els, base);
                     }
                     let fr = self.exec_block(fin, base)?;
                     match res? {
@@ -2798,7 +2894,7 @@ fn builtin_method(o: &V, name: &str, a: Vec<V>) -> R<V> {
 
 fn run_source(src: &str) -> R<()> {
     let prog = compile(src)?;
-    let mut vm = Vm { p: &prog, globals: vec![V::N; prog.nglobals], depth: 0, stack: Vec::new(), brk: false, out: std::io::BufWriter::new(std::io::stdout()) };
+    let mut vm = Vm { p: &prog, globals: vec![V::N; prog.nglobals], depth: 0, stack: Vec::new(), brk: false, cur: String::new(), out: std::io::BufWriter::new(std::io::stdout()) };
     let r = vm.exec_block(&prog.main_body, 0).map(|_| ());
     let r = r.and_then(|_| match prog.entry {
         Some(fi) => {
