@@ -1379,7 +1379,7 @@ fn run_source(src: &str) -> R<()> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("rmojo 0.1.0 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo 0.1.2 (Rust, no C++)"),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,

@@ -5,5 +5,5 @@ def fib(n: int) -> int:
 
 
 def main():
-    print("Hello from MojoL")
+    print("Hello from RMojo")
     print(fib(20))
