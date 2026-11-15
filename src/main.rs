@@ -1376,6 +1376,8 @@ fn run_source(src: &str) -> R<()> {
     r
 }
 
+mod mojo_syntax;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -1387,6 +1389,17 @@ fn main() {
                     eprintln!("rmojo: cannot read {}: {e}", args[2]);
                     std::process::exit(2);
                 }
+            };
+            let src = if args[2].ends_with(".mojo") || args[2].ends_with(".🔥") {
+                match mojo_syntax::to_python(&src) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                src
             };
             // run on a big stack so deep (but bounded) recursion is safe
             let h = std::thread::Builder::new().stack_size(1 << 28).spawn(move || run_source(&src));
