@@ -133,7 +133,7 @@ enum St {
     SetIndex(E, E, E),
     ForIn(Vec<Target>, E, Vec<St>),
     Unpack(Vec<Target>, E),
-    Try(Vec<St>, Vec<(Option<Target>, Vec<St>)>, Vec<St>, Vec<St>),
+    Try(Vec<St>, Vec<(Vec<String>, Option<Target>, Vec<St>)>, Vec<St>, Vec<St>),
     Raise(E),
     Multi(Vec<Target>, Vec<E>),
     Expr(E),
@@ -657,7 +657,19 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
                         Some(n) => Some(sc.lookup_set(n.as_str())),
                         None => None,
                     };
-                    hs.push((tg, cblock(&h.body, sc)?));
+                    let mut tys: Vec<String> = Vec::new();
+                    match h.type_.as_deref() {
+                        Some(Expr::Name(n)) => tys.push(n.id.to_string()),
+                        Some(Expr::Tuple(tt)) => {
+                            for e in &tt.elts {
+                                if let Expr::Name(n) = e {
+                                    tys.push(n.id.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    hs.push((tys, tg, cblock(&h.body, sc)?));
                 }
                 let els = cblock(&t.orelse, sc)?;
                 out.push(St::Try(body, hs, els, cblock(&t.finalbody, sc)?));
@@ -2470,7 +2482,18 @@ impl<'p> Vm<'p> {
                                 Some((cls, rest)) if cls.ends_with("Error") || cls == "Exception" => rest,
                                 _ => msg,
                             };
-                            let (tg, hb) = &hs[0];
+                            let cls_name = e.0.split(':').next().unwrap_or("").trim().to_string();
+                            let hit = hs.iter().find(|(tys, _, _)| {
+                                tys.is_empty()
+                                    || tys.iter().any(|t| {
+                                        t == "Exception"
+                                            || t == "BaseException"
+                                            || *t == cls_name
+                                            || (t == "ArithmeticError" && (cls_name == "ZeroDivisionError" || cls_name == "OverflowError"))
+                                            || (t == "LookupError" && (cls_name == "KeyError" || cls_name == "IndexError"))
+                                    })
+                            });
+                            if let Some((_, tg, hb)) = hit {
                             if let Some(t) = tg {
                                 let v = V::S(Rc::new(msg.to_string()));
                                 match t {
@@ -2479,6 +2502,7 @@ impl<'p> Vm<'p> {
                                 }
                             }
                             res = self.exec_block(hb, base);
+                            }
                         }
                     }
                     if body_ok && matches!(&res, Ok(Flow::Next)) && !els.is_empty() {
