@@ -139,3 +139,7 @@
 ## Windows インストーラー方針 / Windows installer policy
 **日本語**: インストーラーを持つ製品の Windows 版は、すべて `.exe`(Inno Setup/NSIS、必要なら PyInstaller 同梱)で配布する。PowerShell スクリプトは開発用に残すだけで、利用者向けの入口にしない。RMojo は `RMojo-Setup-x64/arm64.exe` を配布済み、2FastAPI は v0.3.1 から `2FastAPI-Setup-x64/arm64.exe`。MFastAPI は pip の wheel 配布でインストーラーを持たない(Windows でも `pip install mfastapi`)。
 **English**: Every product that has an installer ships its Windows build as an `.exe` (Inno Setup/NSIS, with PyInstaller bundling where needed); PowerShell scripts stay for development only. RMojo ships `RMojo-Setup-x64/arm64.exe`; 2FastAPI ships `2FastAPI-Setup-x64/arm64.exe` since v0.3.1. MFastAPI has no installer (wheel only: `pip install mfastapi`, also on Windows).
+
+## 2026-11-16 対応した構文 / Newly supported syntax
+**日本語**: 集合型(`{1,2}`・集合内包表記・`set()`・`in`/`len`/反復・`add`/`remove`/`discard`/`clear`/`union`/`intersection`/`difference`)と連鎖代入(`a = b = v`、名前のみ)を追加。CPython と出力が一致(`tests/t8_sets.py`・`t9_chain.py`、差分0)。**未対応**: `try/else`、引数なしの `raise`、dict の `**` 展開、f文字列の入れ子の書式指定、集合の演算子(`|` `&` `-`)。
+**English**: Added the set type (literals, set comprehensions, `set()`, `in`/`len`/iteration, `add`/`remove`/`discard`/`clear`/`union`/`intersection`/`difference`) and chained assignment (`a = b = v`, names only); output matches CPython (`tests/t8_sets.py`, `t9_chain.py`, 0 differences). **Still unsupported**: `try/else`, bare `raise`, `**` dict unpacking, nested f-string format specs, set operators (`|` `&` `-`).

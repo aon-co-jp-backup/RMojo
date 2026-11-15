@@ -23,10 +23,21 @@ fn mc(e: E) -> E {
     }
 }
 
+fn dedup(items: Vec<V>) -> Vec<V> {
+    let mut out: Vec<V> = Vec::new();
+    for it in items {
+        if !out.iter().any(|e| veq(e, &it)) {
+            out.push(it);
+        }
+    }
+    out
+}
+
 fn deep_copy(v: &V) -> V {
     match v {
         V::L(l) => V::L(Rc::new(std::cell::RefCell::new(l.borrow().iter().map(deep_copy).collect()))),
         V::D(d) => V::D(Rc::new(std::cell::RefCell::new(d.borrow().iter().map(|(k, x)| (k.clone(), deep_copy(x))).collect()))),
+        V::Z(l) => V::Z(Rc::new(std::cell::RefCell::new(l.borrow().iter().map(deep_copy).collect()))),
         V::O(o) => V::O(Rc::new(ObjBox { cls: o.cls, f: std::cell::RefCell::new(o.f.borrow().iter().map(deep_copy).collect()) })),
         V::T(t) => V::T(Rc::new(t.iter().map(deep_copy).collect())),
         other => other.clone(),
@@ -44,6 +55,7 @@ enum V {
     O(Rc<ObjBox>),
     L(Rc<std::cell::RefCell<Vec<V>>>),
     D(Rc<std::cell::RefCell<Vec<(V, V)>>>),
+    Z(Rc<std::cell::RefCell<Vec<V>>>),
     X(Rc<Vec<V>>),
     T(Rc<Vec<V>>),
     N,
@@ -109,6 +121,7 @@ enum E {
     Fmt(Box<E>, String),
     Concat(Vec<E>),
     ToDict(Box<E>),
+    ToSet(Box<E>),
     Slice(Box<E>, Option<Box<E>>, Option<Box<E>>, Option<Box<E>>),
 }
 
@@ -274,6 +287,30 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
             }
             E::Dict(kv)
         }
+        Expr::Set(st) => E::ToSet(Box::new(E::List(st.elts.iter().map(|x| cexpr(x, sc)).collect::<R<Vec<_>>>()?))),
+        Expr::SetComp(sc_) => {
+            let mut gens = Vec::new();
+            for g in &sc_.generators {
+                if g.is_async {
+                    return Err("async comprehension is not supported".into());
+                }
+                let mut tg = Vec::new();
+                match &g.target {
+                    Expr::Name(n) => tg.push(sc.lookup_set(n.id.as_str())),
+                    Expr::Tuple(tt) => {
+                        for e in &tt.elts {
+                            let Expr::Name(n) = e else { return Err("comprehension target must be names".into()) };
+                            tg.push(sc.lookup_set(n.id.as_str()));
+                        }
+                    }
+                    _ => return Err("comprehension target must be a name".into()),
+                }
+                let it = cexpr(&g.iter, sc)?;
+                let conds = g.ifs.iter().map(|c| cexpr(c, sc)).collect::<R<Vec<_>>>()?;
+                gens.push((tg, it, conds));
+            }
+            E::ToSet(Box::new(E::Comp(gens, Box::new(cexpr(&sc_.elt, sc)?))))
+        }
         Expr::ListComp(lc) => {
             let mut gens = Vec::new();
             for g in &lc.generators {
@@ -404,6 +441,7 @@ fn cexpr(e: &Expr, sc: &mut Scope) -> R<E> {
                 "sum" => "sum",
                 "sorted" => "sorted",
                 "list" => "list",
+                "set" => "set",
                 "min" => "min",
                 "max" => "max",
                 "len" => "len",
@@ -429,7 +467,25 @@ fn cblock(body: &[Stmt], sc: &mut Scope) -> R<Vec<St>> {
             })),
             Stmt::Assign(a) => {
                 if a.targets.len() != 1 {
-                    return Err("chained assignment is not supported".into());
+                    // a = b = v : evaluate v once into the first name, then copy it to the others
+                    let mut tg = Vec::new();
+                    for t in &a.targets {
+                        let Expr::Name(n) = t else { return Err("chained assignment supports names only".into()) };
+                        tg.push(sc.lookup_set(n.id.as_str()));
+                    }
+                    let v = cexpr(&a.value, sc)?;
+                    let first = match tg[0] {
+                        Target::Local(i) => (St::SetLocal(i, v), E::Local(i)),
+                        Target::Global(i) => (St::SetGlobal(i, v), E::Global(i)),
+                    };
+                    out.push(first.0);
+                    for t in &tg[1..] {
+                        out.push(match *t {
+                            Target::Local(i) => St::SetLocal(i, first.1.clone()),
+                            Target::Global(i) => St::SetGlobal(i, first.1.clone()),
+                        });
+                    }
+                    continue;
                 }
                 if let (Expr::Tuple(tt), false) = (&a.targets[0], matches!(&*a.value, Expr::Tuple(_))) {
                     let mut tg = Vec::new();
@@ -1341,6 +1397,7 @@ fn repr(v: &V) -> String {
         }
         V::X(x) => format!("[{}]", x.iter().map(repr).collect::<Vec<_>>().join(", ")),
         V::L(l) => format!("[{}]", l.borrow().iter().map(repr).collect::<Vec<_>>().join(", ")),
+        V::Z(l) => if l.borrow().is_empty() { "set()".to_string() } else { format!("{{{}}}", l.borrow().iter().map(repr).collect::<Vec<_>>().join(", ")) },
         V::D(d) => format!("{{{}}}", d.borrow().iter().map(|(k, v)| format!("{}: {}", repr(k), repr(v))).collect::<Vec<_>>().join(", ")),
         other => show(other),
     }
@@ -1402,7 +1459,7 @@ fn show(v: &V) -> String {
         V::B(b) => if *b { "True".into() } else { "False".into() },
         V::S(s) => s.as_str().to_string(),
         V::O(_) => "<object>".into(),
-        V::L(_) | V::D(_) | V::X(_) | V::T(_) => repr(v),
+        V::L(_) | V::D(_) | V::Z(_) | V::X(_) | V::T(_) => repr(v),
         V::N => "None".into(),
     }
 }
@@ -1503,6 +1560,7 @@ fn truthy(v: &V) -> bool {
         V::X(x) | V::T(x) => !x.is_empty(),
         V::L(l) => !l.borrow().is_empty(),
         V::D(d) => !d.borrow().is_empty(),
+        V::Z(l) => !l.borrow().is_empty(),
         V::N => false,
     }
 }
@@ -1810,6 +1868,12 @@ impl<'p> Vm<'p> {
                 }
                 V::S(Rc::new(o))
             }
+            E::ToSet(inner) => {
+                let lv = self.eval(inner, base)?;
+                let V::L(l) = &lv else { return Err("TypeError: set".into()) };
+                let items = l.borrow().clone();
+                V::Z(Rc::new(std::cell::RefCell::new(dedup(items))))
+            }
             E::ToDict(inner) => {
                 let lv = self.eval(inner, base)?;
                 let V::L(l) = &lv else { return Err("TypeError: dict comprehension".into()) };
@@ -1865,6 +1929,7 @@ impl<'p> Vm<'p> {
                     V::L(l) => l.borrow().iter().any(|e| veq(e, &xv)),
                     V::T(l) => l.iter().any(|e| veq(e, &xv)),
                     V::D(d) => d.borrow().iter().any(|(k, _)| veq(k, &xv)),
+                    V::Z(l) => l.borrow().iter().any(|e| veq(e, &xv)),
                     V::S(h) => match &xv {
                         V::S(n) => h.contains(n.as_str()),
                         _ => return Err("TypeError: 'in <string>' requires string as left operand".into()),
@@ -1937,6 +2002,7 @@ impl<'p> Vm<'p> {
             V::L(l) => l.borrow().clone(),
             V::T(l) => l.to_vec(),
             V::D(d) => d.borrow().iter().map(|(k, _)| k.clone()).collect(),
+            V::Z(l) => l.borrow().clone(),
             V::S(st) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
             _ => return Err("TypeError: object is not iterable".into()),
         };
@@ -2155,7 +2221,7 @@ impl<'p> Vm<'p> {
                 let iv = self.eval(i, base)?;
                 return self.index_value(ov, iv);
             }
-            E::List(..) | E::Dict(..) | E::Tuple(..) | E::Slice(..) | E::Comp(..) | E::Fmt(..) | E::Concat(..) | E::ToDict(..) | E::In(..) | E::Attr(..) | E::New(..) | E::Method(..) => return self.eval_cold(e, base),
+            E::List(..) | E::Dict(..) | E::Tuple(..) | E::Slice(..) | E::Comp(..) | E::Fmt(..) | E::Concat(..) | E::ToDict(..) | E::ToSet(..) | E::In(..) | E::Attr(..) | E::New(..) | E::Method(..) => return self.eval_cold(e, base),
             E::Builtin(name, args) => {
                 let vals = args.iter().map(|a| self.eval(a, base)).collect::<R<Vec<_>>>()?;
                 self.builtin(name, vals)?
@@ -2245,6 +2311,7 @@ impl<'p> Vm<'p> {
                 Some(V::L(l)) => V::I(l.borrow().len() as i64),
                 Some(V::X(x)) | Some(V::T(x)) => V::I(x.len() as i64),
                 Some(V::D(d)) => V::I(d.borrow().len() as i64),
+                Some(V::Z(l)) => V::I(l.borrow().len() as i64),
                 _ => return Err("TypeError: len() argument".into()),
             },
             "sum" => {
@@ -2255,8 +2322,19 @@ impl<'p> Vm<'p> {
                 }
                 acc
             }
+            "set" => {
+                let items: Vec<V> = match a.first() {
+                    None => Vec::new(),
+                    Some(V::L(l)) | Some(V::Z(l)) => l.borrow().clone(),
+                    Some(V::T(l)) | Some(V::X(l)) => l.to_vec(),
+                    Some(V::D(d)) => d.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                    Some(V::S(st)) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
+                    _ => return Err("TypeError: set() argument".into()),
+                };
+                V::Z(Rc::new(std::cell::RefCell::new(dedup(items))))
+            }
             "list" => match a.first() {
-                Some(V::L(l)) => V::L(Rc::new(std::cell::RefCell::new(l.borrow().clone()))),
+                Some(V::L(l)) | Some(V::Z(l)) => V::L(Rc::new(std::cell::RefCell::new(l.borrow().clone()))),
                 Some(V::D(d)) => V::L(Rc::new(std::cell::RefCell::new(d.borrow().iter().map(|(k, _)| k.clone()).collect()))),
                 None => V::L(Rc::new(std::cell::RefCell::new(Vec::new()))),
                 _ => return Err("TypeError: list() argument".into()),
@@ -2342,6 +2420,7 @@ impl<'p> Vm<'p> {
                         V::L(l) => l.borrow().clone(),
                         V::T(l) => l.to_vec(),
                         V::D(d) => d.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                        V::Z(l) => l.borrow().clone(),
                         V::S(st) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
                         _ => return Err("TypeError: object is not iterable".into()),
                     };
@@ -2599,6 +2678,49 @@ fn builtin_method(o: &V, name: &str, a: Vec<V>) -> R<V> {
                 None => return Err("ValueError: value is not in list".into()),
             },
             ("count", [x]) => V::I(l.borrow().iter().filter(|e| veq(e, x)).count() as i64),
+            _ => return Err(nomethod()),
+        }),
+        V::Z(z) => Ok(match (name, a.as_slice()) {
+            ("add", [x]) => {
+                if !z.borrow().iter().any(|e| veq(e, x)) {
+                    z.borrow_mut().push(x.clone());
+                }
+                V::N
+            }
+            ("remove", [x]) => {
+                let pos = z.borrow().iter().position(|e| veq(e, x));
+                match pos {
+                    Some(i) => {
+                        z.borrow_mut().remove(i);
+                        V::N
+                    }
+                    None => return Err(format!("KeyError: {}", repr(x)).into()),
+                }
+            }
+            ("discard", [x]) => {
+                let pos = z.borrow().iter().position(|e| veq(e, x));
+                if let Some(i) = pos {
+                    z.borrow_mut().remove(i);
+                }
+                V::N
+            }
+            ("clear", []) => {
+                z.borrow_mut().clear();
+                V::N
+            }
+            ("union", [V::L(o)]) | ("union", [V::Z(o)]) => {
+                let mut v = z.borrow().clone();
+                v.extend(o.borrow().iter().cloned());
+                V::Z(Rc::new(std::cell::RefCell::new(dedup(v))))
+            }
+            ("intersection", [V::L(o)]) | ("intersection", [V::Z(o)]) => {
+                let v: Vec<V> = z.borrow().iter().filter(|e| o.borrow().iter().any(|x| veq(x, e))).cloned().collect();
+                V::Z(Rc::new(std::cell::RefCell::new(v)))
+            }
+            ("difference", [V::L(o)]) | ("difference", [V::Z(o)]) => {
+                let v: Vec<V> = z.borrow().iter().filter(|e| !o.borrow().iter().any(|x| veq(x, e))).cloned().collect();
+                V::Z(Rc::new(std::cell::RefCell::new(v)))
+            }
             _ => return Err(nomethod()),
         }),
         V::D(d) => Ok(match (name, a.as_slice()) {
