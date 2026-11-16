@@ -2458,8 +2458,13 @@ impl<'p> Vm<'p> {
                 _ => return Err("TypeError: list() argument".into()),
             },
             "sorted" => {
-                let Some(V::L(l)) = a.first() else { return Err("TypeError: sorted() argument".into()) };
-                let mut v = l.borrow().clone();
+                let mut v: Vec<V> = match a.first() {
+                    Some(V::L(l)) | Some(V::Z(l)) => l.borrow().clone(),
+                    Some(V::T(l)) | Some(V::X(l)) => l.to_vec(),
+                    Some(V::D(d)) => d.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                    Some(V::S(st)) => st.chars().map(|c| V::S(Rc::new(c.to_string()))).collect(),
+                    _ => return Err("TypeError: sorted() argument".into()),
+                };
                 sort_values(&mut v)?;
                 V::L(Rc::new(std::cell::RefCell::new(v)))
             }
@@ -2959,7 +2964,7 @@ mod mojo_syntax;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("rmojo 0.4.0 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo 0.4.1 (Rust, no C++)"),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,
