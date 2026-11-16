@@ -151,3 +151,7 @@
 ## 2026-11-16 速度と例外の継承 / Speed and exception inheritance
 **日本語**: `list.append` を専用の高速経路にし、素数ふるい(`tests/bench_list.py`、300万要素)が CPython の約3.5倍遅い → **約1.2倍**になった。利用者定義の例外クラスの継承に対応(`class NotFound(AppError)` を `except AppError:` / `except Exception:` が受ける、`tests/t13_userexc.py`、CPython と差分0)。**未了**: Snapdragon・BSD・iOS の実機/実行パッケージ(実機が手元に無い)、`while` と添字代入が中心のループは CPython の約1.5倍遅い(バイトコード化が要る)、WSL での Android ビルド。
 **English**: `list.append` got a dedicated fast path: the sieve benchmark (`tests/bench_list.py`, 3M elements) went from ~3.5x slower than CPython to **~1.2x**. User-defined exception class inheritance is supported (`class NotFound(AppError)` is caught by `except AppError:` / `except Exception:`; `tests/t13_userexc.py`, 0 differences vs CPython). **Open**: Snapdragon / BSD / iOS hardware or runnable packages (no devices at hand); `while` + index-assignment heavy loops are ~1.5x slower than CPython (needs a bytecode stage); Android build in WSL.
+
+## 2026-11-17 到達点 / Status
+**日本語**: v0.4.1 公開(macOS/Linux x64+arm64、Android aarch64、`RMojo-Setup-x64/arm64.exe`)。Windows・Android実機・TVエミュレーター(i686)で確認済み。`sorted(set/tuple/dict/str)`を修正(`tests/t8_sorted_iter.py`)。未了: 実機Snapdragon、WSLでのLinux版NDKビルド。
+**English**: v0.4.1 released (macOS/Linux x64+arm64, Android aarch64, Windows x64/arm64 installers); verified on Windows, a real Android phone and the Android TV (i686) emulator. `sorted()` over set/tuple/dict/str fixed. Open: real Snapdragon hardware, Linux-NDK build inside WSL.
