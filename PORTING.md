@@ -172,3 +172,7 @@
 - **定期試験**: CI を毎日(UTC 03:23)実行し、最新の Python・Flask・Django・FastAPI・Starlette(RMojo は最新の CPython との差分試験)で再試験。失敗したら日付つきの issue を1件起こす。
 - **easy-web.tokyo**: `runo/scripts/refresh_versions.py` を VPS のタイマー(`easy-web-intros-refresh.timer`、1時間ごと)で実行し、MFastAPI・RMojo・2FastAPI・2FastAPI-VSC の最新版と上流(Python・Flask・Django・FastAPI・Starlette・Rust・Mojo)の最新版を各紹介ページと `/demo` に表示(`<製品>/versions.json`)。ページはダウンロード専用のまま。
 - **未了**: 上流の新版が出たときに、利用者の環境(Flask/Django 等)まで自動で上げる機能は無い(本製品が更新するのは本製品自身)。aruaru-llm の同梱は未着手(open-cpu は同梱済み)。iPhone・iPad には対応していない。
+
+## 他OSでの自動更新の試験(2026-11-17)/ Updater tests on other OSes
+**日本語**: Android実機(arm64、Android 14)で、版を0.0.1に偽装したビルドが `rmojo update` で実リリース v0.4.3 を取得→SHA-256検証→置換し、次回起動で更新通知が出ることを確認(`cargo ndk -t arm64-v8a`、`adb`、Git Bashでは `MSYS_NO_PATHCONV=1` が要る)。macOS(x64/arm64)・Linux(x64/arm64)は CI の `update-test` ジョブ(版を0.0.1に偽装→実リリースへ更新→通知まで)で毎回確認。**未了**: iOS(実行パッケージが無く対象外)、Snapdragon/BSD実機。
+**English**: On a real Android 14 arm64 phone, a build disguised as 0.0.1 ran `rmojo update`, fetched the real v0.4.3, verified SHA-256, replaced itself, and announced the update on the next start (`cargo ndk -t arm64-v8a`; Git Bash needs `MSYS_NO_PATHCONV=1` for adb). macOS (x64/arm64) and Linux (x64/arm64) are covered on every CI run by the `update-test` job. **Open**: iOS (no runnable package), Snapdragon/BSD hardware.
