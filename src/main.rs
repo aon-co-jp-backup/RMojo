@@ -2923,7 +2923,18 @@ fn builtin_method(o: &V, name: &str, a: Vec<V>) -> R<V> {
             ("strip", []) => V::S(Rc::new(s.trim().to_string())),
             ("startswith", [V::S(p)]) => V::B(s.starts_with(p.as_str())),
             ("endswith", [V::S(p)]) => V::B(s.ends_with(p.as_str())),
-            ("find", [V::S(p)]) => V::I(s.find(p.as_str()).map(|b| s[..b].chars().count() as i64).unwrap_or(-1)),
+            // 1バイトの検索語は open-cpu の find_byte / count_byte(AVX-512BW > AVX2 > NEON > スカラーを実行時に自動選択)
+            ("find", [V::S(p)]) => {
+                let pos = if p.len() == 1 { open_cpu::find_byte(s.as_bytes(), p.as_bytes()[0]) } else { s.find(p.as_str()) };
+                V::I(pos.map(|b| s[..b].chars().count() as i64).unwrap_or(-1))
+            }
+            ("count", [V::S(p)]) => V::I(if p.is_empty() {
+                s.chars().count() as i64 + 1
+            } else if p.len() == 1 {
+                open_cpu::count_byte(s.as_bytes(), p.as_bytes()[0]) as i64
+            } else {
+                s.matches(p.as_str()).count() as i64
+            }),
             ("replace", [V::S(x), V::S(y)]) => V::S(Rc::new(s.replace(x.as_str(), y.as_str()))),
             ("split", []) => new_list(s.split_whitespace().map(|w| V::S(Rc::new(w.to_string()))).collect()),
             ("split", [V::S(sep)]) if !sep.is_empty() => new_list(s.split(sep.as_str()).map(|w| V::S(Rc::new(w.to_string()))).collect()),
