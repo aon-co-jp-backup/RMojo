@@ -59,6 +59,34 @@ jobs:
         run: |
           t="upstream: 最新版での定期試験が失敗 ($(date -u +%F))"
           gh issue list -R "$GITHUB_REPOSITORY" --state open --search "$t in:title" --json number -q '.[0].number' | grep -q . ||             gh issue create -R "$GITHUB_REPOSITORY" --title "$t" --body "最新の上流(Python・Flask・Django・FastAPI・Starlette・Rust・Mojo)で定期試験が失敗しました。実行: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  update-test:
+    # 自動更新の実機相当試験: 版を 0.0.1 に偽装したビルドで、実リリースへの更新(取得→SHA-256検証→置換→次回起動の通知)を通す
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout sibling open-cpu (bundled)
+        shell: bash
+        run: |
+          [ -d "$GITHUB_WORKSPACE/../open-cpu" ] || git clone --depth 1 https://github.com/aon-co-jp/open-cpu.git "$GITHUB_WORKSPACE/../open-cpu"
+      - name: build as 0.0.1 and update
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          sed -i.bak '0,/^version = "[^"]*"/s//version = "0.0.1"/' Cargo.toml
+          cargo build --release
+          mkdir -p "$RUNNER_TEMP/h"; cp target/release/rmojo "$RUNNER_TEMP/rmojo"
+          unset CI
+          export HOME="$RUNNER_TEMP/h"
+          "$RUNNER_TEMP/rmojo" --version | grep -q "0.0.1"
+          "$RUNNER_TEMP/rmojo" update | tee "$RUNNER_TEMP/out.txt"
+          grep -q "に更新しました" "$RUNNER_TEMP/out.txt"
+          "$RUNNER_TEMP/rmojo" --version 2>"$RUNNER_TEMP/err.txt" | tee "$RUNNER_TEMP/ver.txt"
+          ! grep -q "0.0.1" "$RUNNER_TEMP/ver.txt"
+          grep -q "に更新しました" "$RUNNER_TEMP/err.txt"
   android-ios-check:
     runs-on: macos-latest
     steps:
