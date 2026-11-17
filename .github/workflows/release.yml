@@ -76,7 +76,7 @@ jobs:
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          sed -i.bak '0,/^version = "[^"]*"/s//version = "0.0.1"/' Cargo.toml
+          perl -0pi -e 's/^version = "[^"]*"/version = "0.0.1"/m' Cargo.toml
           cargo build --release
           mkdir -p "$RUNNER_TEMP/h"; cp target/release/rmojo "$RUNNER_TEMP/rmojo"
           unset CI
