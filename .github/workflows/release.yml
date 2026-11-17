@@ -39,6 +39,25 @@ jobs:
           d=rmojo-${{ matrix.target }}; mkdir $d
           cp target/${{ matrix.target }}/release/rmojo $d/; cp installers/${{ matrix.inst }}/*.sh $d/; cp -r examples README.md LICENSE $d/
           tar czf $d.tar.gz $d
+      - name: .deb (linux) build + install/run/remove test
+        if: matrix.inst == 'linux'
+        shell: bash
+        run: |
+          arch=$([ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ] && echo amd64 || echo arm64)
+          sh installers/linux/build-deb.sh target/${{ matrix.target }}/release/rmojo $arch .
+          sudo dpkg -i rmojo_*_$arch.deb
+          rmojo --version; echo 'print(sum(range(10)))' > /tmp/t.py; test "$(rmojo run /tmp/t.py)" = 45
+          sudo dpkg -r rmojo; ! test -e /usr/bin/rmojo; ! test -e /usr/share/rmojo
+      - name: .pkg (macos) build + install/run/remove test
+        if: matrix.inst == 'macos'
+        shell: bash
+        run: |
+          arch=$([ "${{ matrix.target }}" = x86_64-apple-darwin ] && echo x64 || echo arm64)
+          sh installers/macos/build-pkg.sh target/${{ matrix.target }}/release/rmojo $arch .
+          pkgutil --payload-files RMojo-$arch.pkg | grep -q usr/local/bin/rmojo
+          sudo installer -pkg RMojo-$arch.pkg -target /
+          /usr/local/bin/rmojo --version; echo 'print(sum(range(10)))' > /tmp/t.py; test "$(/usr/local/bin/rmojo run /tmp/t.py)" = 45
+          sudo rm -rf /usr/local/bin/rmojo /usr/local/share/rmojo; sudo pkgutil --forget jp.co.aon.rmojo
       - name: installer (windows)
         if: matrix.inst == 'windows'
         shell: pwsh
