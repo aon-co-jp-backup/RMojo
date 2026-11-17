@@ -2993,7 +2993,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Some("--version") | Some("-V") => println!("rmojo 0.4.3 (Rust, no C++)"),
+        Some("--version") | Some("-V") => println!("rmojo {} (Rust, no C++)", env!("CARGO_PKG_VERSION")),
         Some("cpu") => print!("{}", open_cpu::inventory().summary()),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {

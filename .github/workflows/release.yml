@@ -2,6 +2,8 @@ name: build
 on:
   push: { branches: [main], tags: ['v*'] }
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'   # 毎日: 最新の上流で再試験
 permissions: { contents: write }
 jobs:
   build:
@@ -22,6 +24,9 @@ jobs:
         shell: bash
         run: |
           [ -d "$GITHUB_WORKSPACE/../open-cpu" ] || git clone --depth 1 https://github.com/aon-co-jp/open-cpu.git "$GITHUB_WORKSPACE/../open-cpu"
+      - uses: actions/setup-python@v5
+        if: github.event_name == 'schedule' && !contains(matrix.os, 'arm')
+        with: { python-version: "3.x" }   # 最新の CPython との差分試験
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --target ${{ matrix.target }}
       - name: test (differential vs CPython)
@@ -43,6 +48,17 @@ jobs:
           Copy-Item installers\windows\Output\RMojo-Setup-${{ matrix.arch }}.exe RMojo-Setup-${{ matrix.arch }}.exe
       - uses: actions/upload-artifact@v4
         with: { name: "rmojo-${{ matrix.target }}", path: "rmojo-*.tar.gz\nRMojo-Setup-*.exe", if-no-files-found: ignore }
+  upstream-issue:
+    # 毎日の定期実行(最新の Python / Flask / Django / FastAPI / Rust で再試験)が失敗したら、日付つきで issue を1件起こす
+    if: failure() && github.event_name == 'schedule'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions: { issues: write }
+    steps:
+      - env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          t="upstream: 最新版での定期試験が失敗 ($(date -u +%F))"
+          gh issue list -R "$GITHUB_REPOSITORY" --state open --search "$t in:title" --json number -q '.[0].number' | grep -q . ||             gh issue create -R "$GITHUB_REPOSITORY" --title "$t" --body "最新の上流(Python・Flask・Django・FastAPI・Starlette・Rust・Mojo)で定期試験が失敗しました。実行: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
   android-ios-check:
     runs-on: macos-latest
     steps:
