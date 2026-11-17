@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 rustpython-parser = { version = "0.4", default-features = false, features = ["num-bigint"] }
 
+# CPU命令セット検出(`rmojo cpu`)。兄弟リポジトリ open-cpu をソースごと同梱ビルドする
+open-cpu = { path = "../open-cpu" }
+
 [profile.release]
 opt-level = 3
 lto = true

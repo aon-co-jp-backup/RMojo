@@ -2965,6 +2965,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--version") | Some("-V") => println!("rmojo 0.4.1 (Rust, no C++)"),
+        Some("cpu") => print!("{}", open_cpu::inventory().summary()),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
                 Ok(s) => s,

@@ -18,6 +18,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling open-cpu (bundled)
+        shell: bash
+        run: |
+          [ -d "$GITHUB_WORKSPACE/../open-cpu" ] || git clone --depth 1 https://github.com/aon-co-jp/open-cpu.git "$GITHUB_WORKSPACE/../open-cpu"
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --target ${{ matrix.target }}
       - name: test (differential vs CPython)
@@ -43,6 +47,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling open-cpu (bundled)
+        shell: bash
+        run: |
+          [ -d "$GITHUB_WORKSPACE/../open-cpu" ] || git clone --depth 1 https://github.com/aon-co-jp/open-cpu.git "$GITHUB_WORKSPACE/../open-cpu"
       - run: rustup target add aarch64-apple-ios aarch64-linux-android
       - run: cargo check --release --target aarch64-apple-ios
       - run: |
