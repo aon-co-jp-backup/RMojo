@@ -68,5 +68,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+      - name: sha256 for every asset (used by the startup self-update to verify downloads)
+        run: cd dist && for f in *; do sha256sum "$f" > "$f.sha256"; done
       - uses: softprops/action-gh-release@v2
         with: { files: "dist/*" }

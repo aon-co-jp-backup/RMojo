@@ -2971,11 +2971,29 @@ fn run_source(src: &str) -> R<()> {
 }
 
 mod mojo_syntax;
+mod update;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    update::on_startup(&args); // 起動時の自動バージョンアップ(24時間に1回、切り離して確認。RMOJO_NO_UPDATE=1 で停止)
     match args.get(1).map(String::as_str) {
-        Some("--version") | Some("-V") => println!("rmojo 0.4.2 (Rust, no C++)"),
+        Some(update::WORKER_ARG) => {
+            if let Err(e) = update::run_worker() {
+                if let Some(h) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+                    let _ = std::fs::write(std::path::Path::new(&h).join(".rmojo").join("last_error"), e);
+                }
+            }
+        }
+        Some("update") if update::disabled() => println!("rmojo: 自動更新は無効です(環境変数 RMOJO_NO_UPDATE または CI が設定されています)"),
+        Some("update") => match update::run_worker() {
+            Ok(Some(v)) => println!("rmojo: {v} に更新しました"),
+            Ok(None) => println!("rmojo: 最新です({})", update::CURRENT),
+            Err(e) => {
+                eprintln!("rmojo: 更新できません: {e}");
+                std::process::exit(1);
+            }
+        },
+        Some("--version") | Some("-V") => println!("rmojo 0.4.3 (Rust, no C++)"),
         Some("cpu") => print!("{}", open_cpu::inventory().summary()),
         Some("run") if args.len() > 2 => {
             let src = match std::fs::read_to_string(&args[2]) {
