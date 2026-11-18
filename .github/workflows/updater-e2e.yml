@@ -23,9 +23,7 @@ jobs:
           cargo build --release
       - name: update from the real latest release
         working-directory: RMojo
-        env: { HOME: "${{ runner.temp }}/home" }
         run: |
-          mkdir -p "$HOME"
           cp target/release/rmojo ./rmojo-test
           before=$(./rmojo-test --version); echo "before: $before"
           env -u CI -u GITHUB_ACTIONS ./rmojo-test update
