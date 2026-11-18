@@ -1,0 +1,33 @@
+name: updater-e2e
+# 自動更新を、実際の最新リリースに対して通す(古い版として作り → `rmojo update` → 新しい版に置き換わること)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 1'   # 毎週月曜
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: RMojo }
+      - uses: actions/checkout@v4
+        with: { repository: aon-co-jp/open-cpu, path: open-cpu }
+      - name: build as an old version (0.0.1)
+        working-directory: RMojo
+        run: |
+          sed -i.bak 's/^version = ".*"/version = "0.0.1"/' Cargo.toml
+          cargo build --release
+      - name: update from the real latest release
+        working-directory: RMojo
+        env: { HOME: "${{ runner.temp }}/home" }
+        run: |
+          mkdir -p "$HOME"
+          cp target/release/rmojo ./rmojo-test
+          before=$(./rmojo-test --version); echo "before: $before"
+          ./rmojo-test update
+          after=$(./rmojo-test --version); echo "after: $after"
+          test "$before" != "$after"
