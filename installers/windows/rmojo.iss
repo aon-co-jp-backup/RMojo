@@ -1,7 +1,7 @@
 ; RMojo installer for Windows (Inno Setup 6). Native rmojo.exe, no WSL needed.
 ; Build: ISCC.exe /DAppVer=0.4.3 /DBinDir=..\..\target\release installers\windows\rmojo.iss  -> Output\RMojo-Setup-x64.exe (or -arm64 with /DArch=arm64)
 #ifndef AppVer
-#define AppVer "0.4.3"
+#define AppVer "0.4.4"
 #endif
 #ifndef Arch
 #define Arch "x64"
