@@ -1,0 +1,25 @@
+name: freebsd
+# BSD の実機は無いので、GitHub 上の FreeBSD 仮想マシンでビルドと試験を通す(週次・手動)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 2'
+jobs:
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: RMojo }
+      - uses: actions/checkout@v4
+        with: { repository: aon-co-jp/open-cpu, path: open-cpu }
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          prepare: pkg install -y rust curl
+          run: |
+            cd RMojo
+            cargo build --release
+            cargo test --release
+            ./target/release/rmojo --version
+            ./target/release/rmojo cpu
