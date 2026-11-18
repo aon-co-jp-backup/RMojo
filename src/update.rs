@@ -346,6 +346,8 @@ mod tests {
 
     #[test]
     fn this_platform_has_an_asset() {
-        assert!(asset_name().is_some());
+        // 配布物があるのは Windows/Linux/macOS/Android の x64・arm64。BSD などには配布物が無く、更新は何もしない(`None`)のが正しい。
+        let supported = cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "android"));
+        assert_eq!(asset_name().is_some(), supported);
     }
 }

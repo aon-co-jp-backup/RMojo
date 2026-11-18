@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "rmojo"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "open-cpu",
  "rustpython-parser",
