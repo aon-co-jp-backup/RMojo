@@ -207,13 +207,31 @@ fn curl(args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// 最新リリース(タグと資産一覧)。API(未認証はレート制限がある)が駄目なら、`releases/latest` のリダイレクトからタグを得て
+/// 資産の URL を組み立てる(資産名は `asset_name()` と対応する `.sha256` だけ)。
+fn fetch_release() -> Result<(String, Vec<(String, String)>), String> {
+    if let Some(body) = curl(&[&format!("https://api.github.com/repos/{REPO}/releases/latest")]) {
+        if let Some(r) = parse_release(&String::from_utf8_lossy(&body)) {
+            return Ok(r);
+        }
+    }
+    let out = Command::new("curl")
+        .args(["-fsSLI", "--max-time", "60", "-A", "rmojo-updater", "-o", "/dev/null", "-w", "%{url_effective}", &format!("https://github.com/{REPO}/releases/latest")])
+        .output()
+        .map_err(|e| format!("curl を実行できない: {e}"))?;
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let tag = url.rsplit("/tag/").next().filter(|t| url.contains("/tag/") && !t.is_empty() && !t.contains('/')).ok_or("リリース情報を取得できない")?.to_string();
+    let name = asset_name().ok_or("このOS向けの資産が無い")?;
+    let mk = |n: &str| (n.to_string(), format!("https://github.com/{REPO}/releases/download/{tag}/{n}"));
+    Ok((tag.clone(), vec![mk(name), mk(&format!("{name}.sha256"))]))
+}
+
 /// worker 本体。更新したら新しい版名を返す。
 pub fn run_worker() -> Result<Option<String>, String> {
     if disabled() {
         return Ok(None);
     }
-    let body = curl(&[&format!("https://api.github.com/repos/{REPO}/releases/latest")]).ok_or("リリース情報を取得できない")?;
-    let (tag, assets) = parse_release(&String::from_utf8_lossy(&body)).ok_or("リリース情報を読めない")?;
+    let (tag, assets) = fetch_release()?;
     if !is_newer(&tag, CURRENT) {
         return Ok(None);
     }
@@ -232,9 +250,9 @@ pub fn run_worker() -> Result<Option<String>, String> {
     }
     let tmp = std::env::temp_dir().join(format!("rmojo-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("作業フォルダを作れない({}): {e}", tmp.display()))?;
     let file = tmp.join(name);
-    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+    std::fs::write(&file, &bytes).map_err(|e| format!("資産を保存できない({}): {e}", file.display()))?;
     let res = apply(&file, &tmp);
     let _ = std::fs::remove_dir_all(&tmp);
     res?;
@@ -253,25 +271,25 @@ fn apply(installer: &Path, _tmp: &Path) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn apply(archive: &Path, tmp: &Path) -> Result<(), String> {
-    let st = Command::new("tar").arg("xzf").arg(archive).arg("-C").arg(tmp).status().map_err(|e| e.to_string())?;
+    let st = Command::new("tar").arg("xzf").arg(archive).arg("-C").arg(tmp).status().map_err(|e| format!("tar を実行できない: {e}"))?;
     if !st.success() {
         return Err("tar の展開に失敗".into());
     }
     let new_bin = std::fs::read_dir(tmp)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("展開先を読めない: {e}"))?
         .filter_map(|e| e.ok())
         .map(|e| e.path().join("rmojo"))
         .find(|p| p.is_file())
         .ok_or("展開結果に rmojo が無い")?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| format!("自分の場所を取得できない: {e}"))?;
     // 同じ場所に新しい名前で置いてから rename(実行中でも安全。中途半端な状態を残さない)。
     let staged = exe.with_extension("new");
     std::fs::copy(&new_bin, &staged).map_err(|e| format!("書き込めない({}): {e}", staged.display()))?;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("権限を設定できない: {e}"))?;
     std::fs::rename(&staged, &exe).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
-        e.to_string()
+        format!("置き換えできない({}): {e}", exe.display())
     })
 }
 
