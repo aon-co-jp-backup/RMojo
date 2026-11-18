@@ -28,6 +28,6 @@ jobs:
           mkdir -p "$HOME"
           cp target/release/rmojo ./rmojo-test
           before=$(./rmojo-test --version); echo "before: $before"
-          ./rmojo-test update
+          env -u CI -u GITHUB_ACTIONS ./rmojo-test update
           after=$(./rmojo-test --version); echo "after: $after"
           test "$before" != "$after"
