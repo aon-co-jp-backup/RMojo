@@ -283,7 +283,8 @@ fn apply(archive: &Path, tmp: &Path) -> Result<(), String> {
         .ok_or("展開結果に rmojo が無い")?;
     let exe = std::env::current_exe().map_err(|e| format!("自分の場所を取得できない: {e}"))?;
     // 同じ場所に新しい名前で置いてから rename(実行中でも安全。中途半端な状態を残さない)。
-    let staged = exe.with_extension("new");
+    // 起動時の裏の worker と明示の `update` が同時に走っても奪い合わないよう、PID を名前に入れる。
+    let staged = exe.with_extension(format!("new{}", std::process::id()));
     std::fs::copy(&new_bin, &staged).map_err(|e| format!("書き込めない({}): {e}", staged.display()))?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("権限を設定できない: {e}"))?;
